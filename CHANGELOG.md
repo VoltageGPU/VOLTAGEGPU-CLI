@@ -4,6 +4,41 @@ All notable changes to `voltagegpu-cli` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.3.1] - 2026-10-10
+
+Security hardening after an independent review of 1.3.0. Upgrade recommended.
+
+### Security
+- The SSH command returned by the API is only ever displayed in its validated,
+  rebuilt form (`ssh -p PORT user@host`). A command of any other form is
+  neither shown nor run, so a tampered answer cannot end up copied into a
+  shell from `pods show`, `pods wait` or `deploy --wait`.
+- Server text (machine names, locations, error messages, ids) can no longer
+  inject terminal escape sequences or rich markup: control characters are
+  stripped and the text is printed literally. Before, an odd string could also
+  crash the CLI right after a deploy.
+- `voltagegpu verify` calls voltage-verify in-process instead of
+  `python -m voltage_verify`, which put the current directory first on the
+  module path (a `voltage_verify.py` next to a downloaded bundle would run).
+- `voltagegpu ssh` looks for `ssh` on PATH only, never in the current
+  directory (Windows `shutil.which` checks it first), and never runs a
+  `.bat`/`.cmd` script.
+- The one-time sudo password of a Confidential VM is printed exactly as
+  received (no markup or emoji parsing could alter it).
+- The API key is only sent to `voltagegpu.com` hosts (or localhost) unless
+  `VOLT_ALLOW_CUSTOM_BASE_URL=1` is set.
+- A malformed `~/.volt/config.ini` no longer prints its content (which may be
+  the key) in an error; an existing file is set to 0600 before the key is
+  written.
+
+### Changed
+- `deploy standard --cheapest --yes` requires `--max-price`, so a script never
+  rents an expensive machine by surprise.
+- If the deploy request gets no answer, the CLI says the deploy may have gone
+  through and to check `voltagegpu pods list`, instead of suggesting a retry.
+- A warning is printed if the hourly price rose between the listing and the
+  deploy.
+
 ## [1.3.0] - 2026-10-10
 
 Realigns the CLI with the product as it is today: Confidential VMs (Intel TDX)

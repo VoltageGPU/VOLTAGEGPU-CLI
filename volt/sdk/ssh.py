@@ -63,7 +63,7 @@ class SshTarget:
 
 
 def _valid_host(host: str) -> bool:
-    return bool(_HOST_RE.match(host) or _IPV6_RE.match(host))
+    return bool(_HOST_RE.fullmatch(host) or _IPV6_RE.fullmatch(host))
 
 
 def parse_ssh_command(command: str) -> SshTarget:
@@ -104,9 +104,54 @@ def parse_ssh_command(command: str) -> SshTarget:
     if destination is None or destination.count("@") != 1:
         raise UnsafeSshCommand("SSH command has no user@host destination")
     user, host = destination.split("@")
-    if not _USER_RE.match(user) or not _valid_host(host):
+    if not _USER_RE.fullmatch(user) or not _valid_host(host):
         raise UnsafeSshCommand("SSH destination has an unexpected user or host")
     return SshTarget(user=user, host=host, port=port or 22)
 
 
-__all__ = ["SshTarget", "UnsafeSshCommand", "parse_ssh_command"]
+def safe_ssh_command(command: Optional[str]) -> Optional[str]:
+    """The normalised, validated form of a server SSH command, or None.
+
+    Only this form is ever shown to the user: a tampered answer such as
+    ``ssh -o ProxyCommand=... root@h`` must not end up on screen where it would
+    be copied and pasted into a shell.
+    """
+    if not command:
+        return None
+    try:
+        return parse_ssh_command(command).display()
+    except UnsafeSshCommand:
+        return None
+
+
+def find_ssh_binary(env_path: Optional[str] = None, cwd: Optional[str] = None) -> Optional[str]:
+    """Locate ``ssh`` on PATH, never in the current directory.
+
+    ``shutil.which`` on Windows looks in the current directory first, so a
+    ``ssh.exe`` or ``ssh.bat`` planted in a downloaded folder would run. Only
+    absolute PATH entries other than the current directory are searched.
+    """
+    import os
+    import sys
+
+    here = os.path.normcase(os.path.realpath(cwd or os.getcwd()))
+    raw = os.environ.get("PATH", "") if env_path is None else env_path
+    if sys.platform.startswith("win"):
+        exts = [e.lower() for e in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";") if e]
+        names = [f"ssh{e}" for e in exts if e in (".exe", ".com")]  # never a .bat/.cmd script
+    else:
+        names = ["ssh"]
+    for entry in raw.split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if not entry or not os.path.isabs(entry):
+            continue
+        if os.path.normcase(os.path.realpath(entry)) == here:
+            continue
+        for name in names:
+            candidate = os.path.join(entry, name)
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                return candidate
+    return None
+
+
+__all__ = ["SshTarget", "UnsafeSshCommand", "find_ssh_binary", "parse_ssh_command", "safe_ssh_command"]

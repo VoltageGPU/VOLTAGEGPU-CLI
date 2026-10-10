@@ -196,6 +196,8 @@ class VoltageGPUClient:
             pod = self.get_pod(pod_id)
             if on_poll:
                 on_poll(pod)
+            if pod.ssh_command_rejected:
+                raise ApiError(502, f"The API returned an SSH command of an unexpected form for {pod_id}; it was not used.")
             if pod.reachable:
                 return pod
             if pod.status.upper() in ("STOPPED", "TERMINATED", "FAILED", "DELETED"):

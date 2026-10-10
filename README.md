@@ -105,7 +105,7 @@ Every list command takes `--json`; deploys and stops take `--yes`.
 
 ```bash
 # Deploy the cheapest standard machine, wait for SSH, run a job, release it.
-POD=$(voltagegpu deploy standard --cheapest --yes --json | jq -r .deploy.pod_id)
+POD=$(voltagegpu deploy standard --cheapest --max-price 1 --yes --json | jq -r .deploy.pod_id)
 voltagegpu pods wait "$POD"
 voltagegpu ssh "$POD" -o StrictHostKeyChecking=accept-new -- nvidia-smi
 voltagegpu pods stop "$POD" --yes
@@ -147,7 +147,7 @@ curl https://api.voltagegpu.com/api/volt/pods -H "X-API-Key: $VOLT_API_KEY"
 | Setting | Where |
 | --- | --- |
 | API key | `--api-key` of `login`, `VOLT_API_KEY` (or `VOLTAGEGPU_API_KEY`), then `~/.volt/config.ini` |
-| API base URL | `VOLT_BASE_URL` (https only; default `https://api.voltagegpu.com/api`) |
+| API base URL | `VOLT_BASE_URL` (https only, voltagegpu.com hosts unless `VOLT_ALLOW_CUSTOM_BASE_URL=1`; default `https://api.voltagegpu.com/api`) |
 | Debug | `VOLT_DEBUG=1` shows tracebacks |
 
 `voltagegpu config` shows where the key comes from, masked.
@@ -158,9 +158,10 @@ curl https://api.voltagegpu.com/api/volt/pods -H "X-API-Key: $VOLT_API_KEY"
   never followed and certificates are always verified.
 - The key is never printed. `~/.volt/config.ini` is created readable by you
   only, and `voltagegpu config` warns if its permissions are too open.
-- The SSH command returned by the API is parsed into user, host and port and
-  ssh is started without a shell, so a tampered answer cannot run a command on
-  your machine.
+- The SSH command returned by the API is parsed into user, host and port, only
+  that rebuilt form is ever shown, and ssh is started without a shell (and never
+  from the current directory), so a tampered answer cannot run a command on
+  your machine. Server text is printed literally, without terminal escapes.
 - `ssh-keys add` refuses private keys.
 
 Report a vulnerability to contact@voltagegpu.com.

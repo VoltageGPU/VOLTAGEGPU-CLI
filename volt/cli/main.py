@@ -8,6 +8,7 @@ import sys
 from typing import List, Optional
 
 import click
+from rich.errors import MarkupError
 
 from .. import __version__
 from ..sdk.config import API_KEYS_PAGE
@@ -17,7 +18,7 @@ from .cmd_deploy import deploy_group
 from .cmd_machines import machines_cmd, templates_cmd
 from .cmd_misc import account_group, cc_group, verify_cmd
 from .cmd_pods import pods_group, ssh_cmd
-from .output import err_console
+from .output import err_console, esc
 from .state import AppState
 
 EPILOG = """\b
@@ -50,21 +51,21 @@ for command in (machines_cmd, templates_cmd, deploy_group, pods_group, ssh_cmd, 
 
 def _report(exc: BaseException) -> int:
     if isinstance(exc, ConfigError):
-        err_console.print(f"[red]Error:[/red] {exc}")
+        err_console.print(f"[red]Error:[/red] {esc(exc)}")
         return 2
     if isinstance(exc, ApiError):
         if exc.is_auth_error:
             err_console.print(
-                f"[red]Error:[/red] the API refused your key (HTTP {exc.status_code}: {exc.message}).\n"
+                f"[red]Error:[/red] the API refused your key (HTTP {exc.status_code}: {esc(exc.message)}).\n"
                 f"Create or check a key at {API_KEYS_PAGE}, then run `voltagegpu login`."
             )
         elif exc.status_code:
-            err_console.print(f"[red]Error (HTTP {exc.status_code}):[/red] {exc.message}")
+            err_console.print(f"[red]Error (HTTP {exc.status_code}):[/red] {esc(exc.message)}")
         else:
-            err_console.print(f"[red]Error:[/red] {exc.message}")
+            err_console.print(f"[red]Error:[/red] {esc(exc.message)}")
         return 1
     if isinstance(exc, ValueError):
-        err_console.print(f"[red]Error:[/red] {exc}")
+        err_console.print(f"[red]Error:[/red] {esc(exc)}")
         return 2
     return 1
 
@@ -117,6 +118,11 @@ def main(argv: Optional[List[str]] = None) -> None:
         if debug:
             raise
         sys.exit(_report(exc))
+    except MarkupError as exc:  # last resort: never a traceback because of odd text
+        if debug:
+            raise
+        print(f"Error: could not display a message ({type(exc).__name__}).", file=sys.stderr)
+        sys.exit(1)
     except KeyboardInterrupt:
         err_console.print("Interrupted.")
         sys.exit(130)

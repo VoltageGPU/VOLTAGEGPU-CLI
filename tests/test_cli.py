@@ -68,7 +68,7 @@ def test_deploy_standard_refuses_to_charge_without_confirmation_in_a_script(cli_
 def test_deploy_standard_cheapest_with_yes(cli_env):
     cli_env.on("GET", "/api/volt/machines", body=list(reversed(STANDARD_MACHINES)))
     cli_env.on("POST", "/api/volt/pods", handler=standard_deploy_answer)
-    result = run("deploy", "standard", "--cheapest", "--name", "e2e-1", "--ssh-key", "key_1", "--yes", "--json")
+    result = run("deploy", "standard", "--cheapest", "--max-price", "1", "--name", "e2e-1", "--ssh-key", "key_1", "--yes", "--json")
     assert result.exit_code == 0, result.output
     body = cli_env.json_of("POST", "/api/volt/pods")
     assert body == {"provider": "standard", "name": "e2e-1", "machine_id": STANDARD_MACHINES[0]["machine_id"], "ssh_key_id": "key_1"}
@@ -90,7 +90,7 @@ def test_deploy_standard_unknown_machine_and_bad_name(cli_env):
     cli_env.on("GET", "/api/volt/machines", body=STANDARD_MACHINES)
     result = run("deploy", "standard", "--machine", "nope", "--yes")
     assert result.exit_code == 1 and "not in the deployable list" in result.output
-    assert run("deploy", "standard", "--cheapest", "--name", "Bad Name;rm", "--yes").exit_code == 2
+    assert run("deploy", "standard", "--cheapest", "--max-price", "1", "--name", "Bad Name;rm", "--yes").exit_code == 2
     assert run("deploy", "standard", "--yes").exit_code == 2  # neither --machine nor --cheapest
 
 
@@ -142,7 +142,7 @@ def test_ssh_print_rebuilds_the_command(cli_env):
 def test_ssh_runs_ssh_without_a_shell(cli_env, monkeypatch):
     cli_env.on("GET", "/api/volt/pods", body=[STANDARD_POD])
     calls = []
-    monkeypatch.setattr(pods_mod.shutil, "which", lambda name: "/usr/bin/ssh")
+    monkeypatch.setattr(pods_mod.ssh_lookup, "find_ssh_binary", lambda: "/usr/bin/ssh")
     monkeypatch.setattr(pods_mod.subprocess, "call", lambda argv, **kw: calls.append((argv, kw)) or 0)
     result = run("ssh", STANDARD_POD["id"], "-o", "StrictHostKeyChecking=accept-new", "--", "nvidia-smi", "-L")
     assert result.exit_code == 0
@@ -200,22 +200,40 @@ def test_config_masks_the_key(cli_env):
 
 
 def test_verify_argument_mapping():
-    assert verify_argv(["bundle.json", "--offline"])[-3:] == ["verify", "bundle.json", "--offline"]
-    assert verify_argv(["quote", "q.bin"])[-2:] == ["quote", "q.bin"]
-    assert verify_argv(["--help"])[-1] == "--help"
+    assert verify_argv(["bundle.json", "--offline"]) == ["verify", "bundle.json", "--offline"]
+    assert verify_argv(["quote", "q.bin"]) == ["quote", "q.bin"]
+    assert verify_argv(["--help"]) == ["--help"]
+    assert verify_argv([]) == []
 
 
-def test_verify_delegates_without_a_shell(monkeypatch):
+def test_verify_runs_voltage_verify_in_process(monkeypatch):
+    import types
+
     import volt.cli.cmd_misc as misc
 
+    seen = []
+    fake = types.SimpleNamespace(main=lambda argv: seen.append(argv) or 0)
     monkeypatch.setattr(misc.importlib.util, "find_spec", lambda name: object())
-    calls = []
-    monkeypatch.setattr(misc.subprocess, "call", lambda argv, **kw: calls.append(argv) or 0)
+    monkeypatch.setattr(misc.importlib, "import_module", lambda name: fake if name == "voltage_verify.cli" else None)
     assert run("verify", "bundle.json", "--offline").exit_code == 0
-    assert calls[0][1:] == ["-m", "voltage_verify", "verify", "bundle.json", "--offline"]
+    assert seen == [["verify", "bundle.json", "--offline"]]
     monkeypatch.setattr(misc.importlib.util, "find_spec", lambda name: None)
     missing = run("verify", "bundle.json")
     assert missing.exit_code == 2 and "pip install voltage-verify" in missing.output
+
+
+def test_verify_propagates_argparse_exits(monkeypatch):
+    import types
+
+    import volt.cli.cmd_misc as misc
+
+    def help_then_exit(argv):
+        raise SystemExit(0)
+
+    monkeypatch.setattr(misc.importlib, "import_module", lambda name: types.SimpleNamespace(main=help_then_exit))
+    assert misc.run_voltage_verify(["--help"]) == 0
+    monkeypatch.setattr(misc.importlib, "import_module", lambda name: types.SimpleNamespace(main=lambda a: (_ for _ in ()).throw(SystemExit(2))))
+    assert misc.run_voltage_verify(["bogus"]) == 2
 
 
 def test_main_turns_api_errors_into_clean_exit_codes(cli_env, capsys):
@@ -240,4 +258,4 @@ def test_main_without_a_key(monkeypatch, tmp_path, capsys):
 
 def test_version_and_module_entry():
     out = subprocess.run([__import__("sys").executable, "-m", "volt", "--version"], capture_output=True, text=True)
-    assert out.returncode == 0 and "1.3.0" in out.stdout
+    assert out.returncode == 0 and "1.3.1" in out.stdout

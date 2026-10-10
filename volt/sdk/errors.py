@@ -14,7 +14,8 @@ _MAX_MESSAGE = 600
 
 
 def scrub(text: str) -> str:
-    """Return ``text`` without internal supplier names, trimmed to a sane length."""
+    """Return ``text`` without control characters or internal supplier names, trimmed to a sane length."""
+    text = "".join(ch for ch in text if not (ord(ch) < 32 or 127 <= ord(ch) < 160) or ch in "\t\n")
     cleaned = _DECENTRALIZED.sub("", _INTERNAL_NAMES.sub("provider", text))
     cleaned = " ".join(cleaned.split())
     if len(cleaned) > _MAX_MESSAGE:

@@ -22,8 +22,9 @@ API_KEYS_PAGE = "https://voltagegpu.com/api-keys"
 # Keys look like volt_<32 hex>_<32 hex>; the server only requires the prefix,
 # so the client stays tolerant but refuses anything that could smuggle a
 # header break or whitespace into a request.
-_API_KEY_RE = re.compile(r"^volt_[A-Za-z0-9_-]{8,200}$")
+_API_KEY_RE = re.compile(r"volt_[A-Za-z0-9_-]{8,200}")
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+ALLOW_CUSTOM_BASE_URL_ENV_VAR = "VOLT_ALLOW_CUSTOM_BASE_URL"
 
 
 def default_config_path() -> Path:
@@ -32,7 +33,7 @@ def default_config_path() -> Path:
 
 
 def is_valid_api_key(key: str) -> bool:
-    return bool(_API_KEY_RE.match(key or ""))
+    return bool(_API_KEY_RE.fullmatch(key or ""))
 
 
 def mask_api_key(key: str) -> str:
@@ -42,11 +43,13 @@ def mask_api_key(key: str) -> str:
     return f"volt_****{key[-4:]}" if len(key) > 12 else "****"
 
 
-def validate_base_url(url: str) -> str:
+def validate_base_url(url: str, allow_custom: bool = False) -> str:
     """Return a normalised base URL, refusing anything that would leak the key.
 
-    The API key travels in a header on every request, so plain HTTP is only
-    accepted for a local development server.
+    The API key travels in a header on every request: plain HTTP is only
+    accepted for a local development server, and a host outside
+    voltagegpu.com needs an explicit opt-in (VOLT_ALLOW_CUSTOM_BASE_URL=1), so
+    a poisoned environment variable cannot quietly send the key elsewhere.
     """
     candidate = (url or "").strip().rstrip("/")
     parts = urlsplit(candidate)
@@ -54,20 +57,40 @@ def validate_base_url(url: str) -> str:
         raise ConfigError(f"Invalid base URL {candidate!r}: expected https://host/path.")
     if parts.username or parts.password:
         raise ConfigError("The base URL must not contain credentials.")
-    if parts.scheme == "http" and parts.hostname not in _LOCAL_HOSTS:
+    host = parts.hostname.lower()
+    if parts.scheme == "http" and host not in _LOCAL_HOSTS:
         raise ConfigError("Refusing a plain http:// base URL: the API key would be sent unencrypted. Use https://.")
+    ours = host == "voltagegpu.com" or host.endswith(".voltagegpu.com") or host in _LOCAL_HOSTS
+    if not ours and not allow_custom:
+        raise ConfigError(
+            f"Refusing to send your API key to {host}: only voltagegpu.com hosts are allowed. "
+            f"Set {ALLOW_CUSTOM_BASE_URL_ENV_VAR}=1 if this is intended."
+        )
     return candidate
 
 
-def _read_key_file(path: Path) -> Optional[str]:
-    if not path.exists():
-        return None
+def _load(path: Path) -> ConfigParser:
+    """Parse the config file without ever echoing its content in an error
+    (configparser messages quote the offending line, which may be the key)."""
     parser = ConfigParser()
-    try:
-        parser.read(path, encoding="utf-8")
-    except Exception as exc:  # configparser raises several unrelated types
-        raise ConfigError(f"Cannot read {path}: {type(exc).__name__}.") from None
-    value = parser.get("api", "api_key", fallback=None)
+    if path.exists():
+        try:
+            parser.read(path, encoding="utf-8")
+        except Exception as exc:  # configparser raises several unrelated types
+            raise ConfigError(f"Cannot read {path} ({type(exc).__name__}). Fix or delete it, then run `voltagegpu login`.") from None
+    return parser
+
+
+def _write_private(path: Path, parser: ConfigParser) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    if hasattr(os, "fchmod"):
+        os.fchmod(fd, 0o600)  # an existing 0644 file is tightened before the key is written
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        parser.write(handle)
+
+
+def _read_key_file(path: Path) -> Optional[str]:
+    value = _load(path).get("api", "api_key", fallback=None)
     return value.strip() if value else None
 
 
@@ -91,20 +114,13 @@ def save_api_key(key: str, path: Optional[Path] = None) -> Path:
         os.chmod(target.parent, 0o700)
     except OSError:
         pass
-    parser = ConfigParser()
-    if target.exists():
-        parser.read(target, encoding="utf-8")
+    parser = _load(target)
     if not parser.has_section("api"):
         parser.add_section("api")
     parser.set("api", "api_key", key)
-    # O_CREAT with 0o600 so the file is never world-readable, not even briefly.
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        parser.write(handle)
-    try:
-        os.chmod(target, 0o600)
-    except OSError:
-        pass
+    # O_CREAT with 0o600 (+ fchmod) so the file is never readable by others, not even briefly.
+    # On Windows the file inherits the ACL of the user profile folder.
+    _write_private(target, parser)
     return target
 
 
@@ -113,14 +129,11 @@ def remove_api_key(path: Optional[Path] = None) -> bool:
     target = path or default_config_path()
     if not target.exists():
         return False
-    parser = ConfigParser()
-    parser.read(target, encoding="utf-8")
+    parser = _load(target)
     if not parser.has_option("api", "api_key"):
         return False
     parser.remove_option("api", "api_key")
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        parser.write(handle)
+    _write_private(target, parser)
     return True
 
 
@@ -166,7 +179,10 @@ class Config:
             )
         if not is_valid_api_key(key):
             raise ConfigError(f"The API key from {source} is malformed: VoltageGPU keys start with volt_.")
-        url = validate_base_url(base_url or environ.get(BASE_URL_ENV_VAR) or DEFAULT_BASE_URL)
+        url = validate_base_url(
+            base_url or environ.get(BASE_URL_ENV_VAR) or DEFAULT_BASE_URL,
+            allow_custom=environ.get(ALLOW_CUSTOM_BASE_URL_ENV_VAR) == "1",
+        )
         return cls(api_key=key, base_url=url, source=source)
 
 

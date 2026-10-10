@@ -9,12 +9,14 @@ from typing import Any, Dict, List, Optional, Tuple
 import click
 
 from ..sdk.errors import ApiError
-from ..sdk.models import CONFIDENTIAL, STANDARD, DeployResult, Machine, Pod
+from ..sdk.models import CONFIDENTIAL, STANDARD, DeployResult, Machine, Pod, strip_controls
 from .cmd_machines import filter_machines
-from .output import console, echo_json, fail, hint, info, is_interactive, money, status_style, warn
+from .output import console, echo_json, esc, fail, hint, info, is_interactive, money, plain, status_style, warn
 from .state import AppState, pass_state
 
-NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
+UNCERTAIN = ("The deploy request got no answer, so it may have gone through and been charged. "
+             "Check `voltagegpu pods list` before deploying again.")
 _PORT_RE = re.compile(r"^(\d{1,5})(?:/(tcp|udp))?$", re.IGNORECASE)
 
 
@@ -23,14 +25,14 @@ def default_name() -> str:
 
 
 def check_name(name: str) -> str:
-    if not NAME_RE.match(name):
+    if not NAME_RE.fullmatch(name):
         raise click.BadParameter("use 1-40 lowercase letters, digits and hyphens, starting with a letter or digit", param_hint="--name")
     return name
 
 
 def parse_port_spec(spec: str) -> Dict[str, Any]:
     """'8000' / '8000/tcp' / '53/udp' -> {"port": 8000, "protocol": "tcp"}."""
-    match = _PORT_RE.match(spec.strip())
+    match = _PORT_RE.fullmatch(spec.strip())
     if not match:
         raise click.BadParameter(f"{spec!r}: expected PORT or PORT/tcp or PORT/udp", param_hint="--port")
     port = int(match.group(1))
@@ -66,6 +68,23 @@ def _confirm_charge(amount: Optional[float], yes: bool) -> None:
         raise click.exceptions.Exit(1)
 
 
+def _deploy(call: Any) -> DeployResult:
+    """Run a deploy call; a lost answer is reported as 'maybe charged', never as 'try again'."""
+    try:
+        return call()
+    except ApiError as exc:
+        if exc.status_code == 0:
+            fail(UNCERTAIN)
+        raise
+
+
+def _check_price(confirmed: Optional[float], result: DeployResult, pod_id: str) -> None:
+    """The price is re-read by the server at deploy time; say so if it moved up."""
+    if confirmed is not None and result.hourly_price is not None and result.hourly_price > confirmed + 1e-9:
+        warn(f"The hourly price changed from {money(confirmed)} to {money(result.hourly_price)} between the list and the deploy. "
+             f"Stop it with `voltagegpu pods stop {pod_id}` if that does not suit you.")
+
+
 def _wait(state: AppState, pod_id: str, timeout: int) -> Pod:
     seen: Dict[str, str] = {}
 
@@ -73,9 +92,9 @@ def _wait(state: AppState, pod_id: str, timeout: int) -> Pod:
         label = pod.provider_status or pod.status
         if seen.get("s") != label:
             seen["s"] = label
-            console.print(f"  status: [{status_style(pod.status)}]{label}[/]")
+            console.print(f"  status: [{status_style(pod.status)}]{esc(label)}[/]")
 
-    info(f"Waiting for SSH on {pod_id} (up to {timeout} s)...")
+    info(f"Waiting for SSH on {esc(pod_id)} (up to {timeout} s)...")
     return state.client().wait_until_reachable(pod_id, timeout=timeout, interval=10.0, on_poll=on_poll)
 
 
@@ -84,17 +103,18 @@ def _after_deploy(state: AppState, result: DeployResult, wait: bool, timeout: in
     if wait:
         try:
             pod = _wait(state, result.pod_id, timeout) if not as_json else state.client().wait_until_reachable(result.pod_id, timeout=timeout)
-        except TimeoutError as exc:
-            warn(str(exc))
+        except (TimeoutError, ApiError) as exc:
+            warn(f"{exc} The pod is still billing: stop it with `voltagegpu pods stop {result.pod_id}` if needed.")
     if as_json:
         echo_json({"deploy": result.to_dict(), "pod": pod.to_dict() if pod else None})
         return
     if pod and pod.ssh_command:
-        console.print(f"[green]Ready.[/green] SSH: {pod.ssh_command}")
+        console.print(f"[green]Ready.[/green] SSH: {esc(pod.ssh_command)}")
+    pid = esc(result.pod_id)
     info("")
     info("Next:")
-    info(f"  voltagegpu pods wait {result.pod_id}     # until SSH is ready" if not pod else f"  voltagegpu ssh {result.pod_id}")
-    info(f"  voltagegpu pods stop {result.pod_id}     # release it (billing stops)")
+    info(f"  voltagegpu pods wait {pid}     # until SSH is ready" if not pod else f"  voltagegpu ssh {pid}")
+    info(f"  voltagegpu pods stop {pid}     # release it (billing stops)")
 
 
 @click.group("deploy")
@@ -125,6 +145,8 @@ def deploy_standard(state: AppState, machine_id: Optional[str], cheapest: bool, 
     """Deploy a standard pod: a whole machine, no enclave, for non-sensitive workloads."""
     if bool(machine_id) == bool(cheapest):
         fail("Give exactly one of --machine MACHINE_ID or --cheapest.", code=2)
+    if cheapest and yes and max_price is None:
+        fail("With --cheapest --yes, set --max-price so a script never rents an expensive machine by surprise.", code=2)
     pod_name = check_name(name) if name else default_name()
     client = state.client()
     try:
@@ -132,16 +154,18 @@ def deploy_standard(state: AppState, machine_id: Optional[str], cheapest: bool, 
     except LookupError as exc:
         fail(str(exc))
     if not as_json:
-        info(f"Standard pod [bold]{pod_name}[/bold] on {machine.gpu_count}x {machine.gpu_type}"
-             f"{' (' + machine.location + ')' if machine.location else ''}, {money(machine.price_per_hour)}/hour")
-        hint(f"machine {machine.id}. No enclave: use a Confidential VM for sensitive data.")
+        where = f" ({esc(machine.location)})" if machine.location else ""
+        info(f"Standard pod [bold]{esc(pod_name)}[/bold] on {machine.gpu_count}x {esc(machine.gpu_type)}{where}, "
+             f"{money(machine.price_per_hour)}/hour")
+        hint(f"machine {esc(machine.id)}. No enclave: use a Confidential VM for sensitive data.")
     _confirm_charge(machine.price_per_hour, yes)
-    result = client.deploy_standard(
+    result = _deploy(lambda: client.deploy_standard(
         machine.id, pod_name, template_id=template_id, ssh_key_id=ssh_key_id, gpu_count=None,
         jupyter=jupyter, port_count=port_count, auto_terminate_hours=auto_terminate_hours,
-    )
+    ))
+    _check_price(machine.price_per_hour, result, result.pod_id)
     if not as_json:
-        console.print(f"[green]Deployed.[/green] Pod {result.pod_id}, {money(result.hourly_price)}/hour, "
+        console.print(f"[green]Deployed.[/green] Pod {esc(result.pod_id)}, {money(result.hourly_price)}/hour, "
                       f"{money(result.prepaid_amount)} prepaid.")
     _after_deploy(state, result, wait, timeout, as_json)
 
@@ -170,22 +194,24 @@ def deploy_confidential(state: AppState, tier: str, name: Optional[str], hardsto
         fail("Add an SSH key first (voltagegpu ssh-keys add). A Confidential VM binds your keys at creation "
              "and cannot be given one afterwards.")
     if not as_json:
-        info(f"Confidential VM [bold]{pod_name}[/bold] on {machine.id} ({machine.gpu_count}x {machine.gpu_type}), "
+        info(f"Confidential VM [bold]{esc(pod_name)}[/bold] on {esc(machine.id)} ({machine.gpu_count}x {esc(machine.gpu_type)}), "
              f"{money(machine.price_per_hour)}/hour")
         hint("Every SSH key on your account is bound to the VM. We keep no key on it.")
     _confirm_charge(machine.price_per_hour, yes)
-    result = client.deploy_confidential(tier, pod_name, hardstop_hours=hardstop_hours, ports=port_list)
+    result = _deploy(lambda: client.deploy_confidential(tier, pod_name, hardstop_hours=hardstop_hours, ports=port_list))
+    _check_price(machine.price_per_hour, result, result.pod_id)
     if not as_json:
-        console.print(f"[green]Deployed.[/green] VM {result.pod_id}, {money(result.hourly_price)}/hour, booting.")
+        console.print(f"[green]Deployed.[/green] VM {esc(result.pod_id)}, {money(result.hourly_price)}/hour, booting.")
         if result.sudo_password:
-            console.print(f"  sudo password (shown once, we do not keep it): [bold]{result.sudo_password}[/bold]")
+            info("  sudo password (shown once, we do not keep it):")
+            plain(f"  {result.sudo_password}")  # no markup or emoji parsing: printed exactly
         if result.hard_stop_at:
-            info(f"  automatic release at {result.hard_stop_at}")
+            info(f"  automatic release at {esc(result.hard_stop_at)}")
         commands = (result.attestation or {}).get("verifyInsideTheVm")
         if isinstance(commands, list) and commands:
             hint("Verify the attestation inside the VM (then check the bundle with `voltagegpu verify`):")
             for line in commands:
-                hint(f"  {line}")
+                hint(f"  {esc(strip_controls(str(line)))}")
     _after_deploy(state, result, wait, timeout, as_json)
 
 

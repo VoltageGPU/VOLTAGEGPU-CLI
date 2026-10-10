@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from typing import Optional, Tuple
 
 import click
 
+from ..sdk import ssh as ssh_lookup
 from ..sdk.models import Pod
 from ..sdk.ssh import UnsafeSshCommand, parse_ssh_command
-from .output import console, echo_json, fail, hint, info, is_interactive, money, status_style, table
+from .output import console, echo_json, esc, fail, hint, info, is_interactive, money, status_style, styled, table
 from .state import AppState, pass_state
+
+REJECTED_SSH = ("The API returned an SSH command of an unexpected form, so it is not shown or run. "
+                "Contact contact@voltagegpu.com.")
 
 
 class AliasedGroup(click.Group):
@@ -50,7 +53,7 @@ def pods_list(state: AppState, as_json: bool) -> None:
         [("POD ID", {"style": "cyan", "no_wrap": True}), ("TYPE",), ("STATUS",), ("GPU",),
          ("$/HOUR", {"justify": "right", "style": "green"}), ("SSH",)],
         [
-            (p.id, "confidential VM" if p.confidential else "standard", f"[{status_style(p.status)}]{p.provider_status or p.status}[/]",
+            (p.id, "confidential VM" if p.confidential else "standard", styled(p.provider_status or p.status, status_style(p.status)),
              f"{p.gpu_count}x {p.gpu_type}" if p.gpu_count and p.gpu_type else (p.resource_name or p.gpu_type),
              money(p.hourly_price), "ready" if p.reachable else "not yet")
             for p in pods
@@ -60,17 +63,19 @@ def pods_list(state: AppState, as_json: bool) -> None:
 
 
 def _show(pod: Pod) -> None:
+    status = f"[{status_style(pod.status)}]{esc(pod.status)}[/]" + (f" ({esc(pod.provider_status)})" if pod.provider_status else "")
+    ssh = "rejected (unexpected form from the API)" if pod.ssh_command_rejected else (pod.ssh_command if pod.reachable else "not ready yet")
     rows = [
-        ("Pod", pod.id),
+        ("Pod", esc(pod.id)),
         ("Type", "Confidential VM (Intel TDX)" if pod.confidential else "Standard pod (no enclave)"),
-        ("Status", f"[{status_style(pod.status)}]{pod.status}[/]" + (f" ({pod.provider_status})" if pod.provider_status else "")),
-        ("Name", pod.name),
-        ("Tier", pod.resource_name if pod.confidential else None),
-        ("GPU", f"{pod.gpu_count}x {pod.gpu_type}" if pod.gpu_count and pod.gpu_type else pod.gpu_type),
+        ("Status", status),
+        ("Name", esc(pod.name) if pod.name else None),
+        ("Tier", esc(pod.resource_name) if pod.confidential and pod.resource_name else None),
+        ("GPU", esc(f"{pod.gpu_count}x {pod.gpu_type}" if pod.gpu_count and pod.gpu_type else pod.gpu_type or "") or None),
         ("Price", f"{money(pod.hourly_price)}/hour" if pod.hourly_price is not None else None),
-        ("SSH", pod.ssh_command if pod.reachable else "not ready yet"),
-        ("Jupyter", pod.jupyter_url),
-        ("Created", pod.created_at),
+        ("SSH", esc(ssh)),
+        ("Jupyter", esc(pod.jupyter_url) if pod.jupyter_url else None),
+        ("Created", esc(pod.created_at) if pod.created_at else None),
     ]
     for label, value in rows:
         if value:
@@ -101,9 +106,11 @@ def pods_wait(state: AppState, pod_id: str, timeout: int, as_json: bool) -> None
 
     def on_poll(pod: Pod) -> None:
         label = pod.provider_status or pod.status
+        if pod.ssh_command_rejected:
+            fail(REJECTED_SSH)
         if not as_json and label != last["s"]:
             last["s"] = label
-            console.print(f"  status: [{status_style(pod.status)}]{label}[/]")
+            console.print(f"  status: [{status_style(pod.status)}]{esc(label)}[/]")
 
     try:
         pod = state.client().wait_until_reachable(pod_id, timeout=timeout, interval=10.0, on_poll=on_poll)
@@ -112,7 +119,7 @@ def pods_wait(state: AppState, pod_id: str, timeout: int, as_json: bool) -> None
     if as_json:
         echo_json(pod.to_dict())
     else:
-        console.print(f"[green]Ready.[/green] {pod.ssh_command}")
+        console.print(f"[green]Ready.[/green] {esc(pod.ssh_command)}")
 
 
 @pods_group.command("stop")
@@ -131,7 +138,7 @@ def pods_stop(state: AppState, pod_id: str, yes: bool, as_json: bool) -> None:
     if as_json:
         echo_json(result.to_dict())
         return
-    console.print(f"[green]Released.[/green] {pod_id}")
+    console.print(f"[green]Released.[/green] {esc(pod_id)}")
     if result.prepaid_refund is not None:
         info(f"Unused prepaid time refunded: {money(result.prepaid_refund, 4)}")
 
@@ -159,6 +166,8 @@ def ssh_cmd(state: AppState, pod_id: str, remote_command: Tuple[str, ...], ident
         if "=" not in opt or opt.startswith("-"):
             fail(f"--ssh-option expects KEY=VALUE, got {opt!r}", code=2)
     pod = state.client().get_pod(pod_id)
+    if pod.ssh_command_rejected:
+        fail("Refusing to run it: " + REJECTED_SSH)
     if not pod.reachable or not pod.ssh_command:
         fail(f"SSH is not ready on {pod_id} yet (status {pod.provider_status or pod.status}). "
              f"Wait with: voltagegpu pods wait {pod_id}")
@@ -169,7 +178,7 @@ def ssh_cmd(state: AppState, pod_id: str, remote_command: Tuple[str, ...], ident
     if print_only:
         click.echo(target.display(identity))
         return
-    binary = shutil.which("ssh")
+    binary = ssh_lookup.find_ssh_binary()  # PATH only, never the current directory
     if not binary:
         fail("No ssh client found on PATH. Install OpenSSH, or use: voltagegpu ssh POD_ID --print")
     argv = target.argv(identity_file=identity, remote_command=remote_command, options=ssh_options)

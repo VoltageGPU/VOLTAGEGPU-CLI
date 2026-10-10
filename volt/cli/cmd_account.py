@@ -17,7 +17,7 @@ from ..sdk.config import (
     save_api_key,
 )
 from ..sdk.errors import ApiError, ConfigError
-from .output import console, echo_json, fail, hint, info, is_interactive, money, table, warn
+from .output import console, echo_json, esc, fail, hint, info, is_interactive, money, table, warn
 from .state import AppState, pass_state
 
 _PUBLIC_KEY_PREFIXES = ("ssh-ed25519 ", "ssh-rsa ", "ecdsa-sha2-", "sk-ssh-ed25519@openssh.com ", "sk-ecdsa-sha2-")
@@ -65,7 +65,7 @@ def login_cmd(state: AppState, api_key: Optional[str]) -> None:
             fail("The API refused this key. Check it on " + API_KEYS_PAGE)
         raise
     path = save_api_key(api_key)
-    console.print(f"[green]Logged in.[/green] Key saved to {path}")
+    console.print(f"[green]Logged in.[/green] Key saved to {esc(path)}")
     hint("Environment variables (VOLT_API_KEY) take precedence over this file.")
 
 
@@ -73,7 +73,7 @@ def login_cmd(state: AppState, api_key: Optional[str]) -> None:
 def logout_cmd() -> None:
     """Remove the stored API key from ~/.volt/config.ini."""
     if remove_api_key():
-        info(f"Removed the key from {default_config_path()}. Revoke it too on {API_KEYS_PAGE} if it may have leaked.")
+        info(f"Removed the key from {esc(default_config_path())}. Revoke it too on {API_KEYS_PAGE} if it may have leaked.")
     else:
         info("No stored key.")
 
@@ -86,8 +86,8 @@ def config_cmd(state: AppState) -> None:
         cfg = Config.load(base_url=state.base_url)
     except ConfigError as exc:
         fail(str(exc))
-    info(f"API base URL  {cfg.base_url}")
-    info(f"API key       {cfg.masked_key}  from {cfg.source}")
+    info(f"API base URL  {esc(cfg.base_url)}")
+    info(f"API key       {esc(cfg.masked_key)}  from {esc(cfg.source)}")
     warning = permissions_warning(default_config_path())
     if warning:
         warn(warning)
@@ -107,10 +107,10 @@ def balance_cmd(state: AppState, as_json: bool) -> None:
     if as_json:
         echo_json(bal.to_dict())
         return
-    console.print(f"Balance  [bold green]{money(bal.balance)}[/bold green] {bal.currency}")
+    console.print(f"Balance  [bold green]{money(bal.balance)}[/bold green] {esc(bal.currency)}")
     if bal.active_pods is not None:
         info(f"Running  {bal.active_pods} pod{'s' if bal.active_pods != 1 else ''}")
-    hint(f"Top up: {bal.top_up_url}")
+    hint(f"Top up: {esc(bal.top_up_url)}")
 
 
 @click.group("ssh-keys")
@@ -158,7 +158,7 @@ def ssh_keys_add(state: AppState, name: Optional[str], key_file: Optional[Path],
     if as_json:
         echo_json(key.to_dict())
     else:
-        console.print(f"[green]Added.[/green] {key.name} ({key.id})")
+        console.print(f"[green]Added.[/green] {esc(key.name)} ({esc(key.id)})")
 
 
 @ssh_keys_group.command("delete")
@@ -173,4 +173,4 @@ def ssh_keys_delete(state: AppState, key_id: str, yes: bool) -> None:
         if not click.confirm(f"Delete SSH key {key_id}?", default=False):
             raise click.exceptions.Exit(1)
     state.client().delete_ssh_key(key_id)
-    console.print(f"[green]Deleted.[/green] {key_id}")
+    console.print(f"[green]Deleted.[/green] {esc(key_id)}")

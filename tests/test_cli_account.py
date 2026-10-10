@@ -87,7 +87,7 @@ def test_ssh_keys_add_without_any_key_file(cli_env, monkeypatch, tmp_path):
 def test_pods_wait(cli_env):
     cli_env.on("GET", "/api/volt/pods", body=[STANDARD_POD])
     result = run("pods", "wait", STANDARD_POD["id"], "--timeout", "10")
-    assert result.exit_code == 0 and STANDARD_POD["ssh_command"] in result.output
+    assert result.exit_code == 0 and "ssh -p 40400 root@147.135.114.178" in result.output
 
 
 def test_pods_list_empty(cli_env):

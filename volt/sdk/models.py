@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, Mapping, Optional, Tuple
 
+from .ssh import safe_ssh_command
+
 STANDARD = "standard"
 CONFIDENTIAL = "confidential"
 
@@ -26,10 +28,16 @@ def _int(value: Any) -> Optional[int]:
     return int(n) if n is not None else None
 
 
+def strip_controls(text: str) -> str:
+    """Drop C0/C1 control characters (ESC sequences, BEL...) from server text,
+    so nothing the API returns can drive the terminal."""
+    return "".join(ch for ch in text if ch in "\t\n" or not (ord(ch) < 32 or 127 <= ord(ch) < 160))
+
+
 def _str(value: Any) -> Optional[str]:
     if value is None:
         return None
-    text = str(value).strip()
+    text = strip_controls(str(value)).strip()
     return text or None
 
 
@@ -155,6 +163,7 @@ class Pod:
     resource_name: Optional[str] = None
     jupyter_url: Optional[str] = None
     created_at: Optional[str] = None
+    ssh_command_rejected: bool = False  # the API sent an SSH command of an unexpected form
 
     @property
     def confidential(self) -> bool:
@@ -171,6 +180,8 @@ class Pod:
     def from_api(cls, raw: Mapping[str, Any]) -> "Pod":
         kind = _kind(raw)
         gpu = _str(raw.get("gpu_type") or raw.get("gpuType"))
+        raw_ssh = _str(raw.get("ssh_command"))
+        ssh = safe_ssh_command(raw_ssh)
         return cls(
             id=str(raw.get("id") or raw.get("workloadUid") or raw.get("podId") or ""),
             kind=kind,
@@ -179,12 +190,13 @@ class Pod:
             gpu_type=clean_gpu_name(gpu) if gpu else None,
             gpu_count=_int(raw.get("gpu_count")),
             hourly_price=_num(raw.get("hourly_price", raw.get("hourlyPrice"))),
-            ssh_command=_str(raw.get("ssh_command")),
+            ssh_command=ssh,
             ssh_ready=raw.get("ssh_ready") if isinstance(raw.get("ssh_ready"), bool) else None,
             provider_status=_str(raw.get("provider_status") or raw.get("phase")),
             resource_name=_str(raw.get("resource_name")),
             jupyter_url=_str(raw.get("jupyter_url")),
             created_at=_str(raw.get("created_at") or raw.get("createdAt")),
+            ssh_command_rejected=bool(raw_ssh) and ssh is None,
         )
 
     def to_dict(self) -> Dict[str, Any]:

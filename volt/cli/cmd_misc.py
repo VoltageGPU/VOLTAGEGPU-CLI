@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
 import importlib.util
-import subprocess
-import sys
 from typing import List, Sequence, Tuple
 
 import click
@@ -16,7 +15,7 @@ VERIFY_SUBCOMMANDS = ("manifest", "attest", "verify", "quote", "inspect", "selft
 
 
 def verify_argv(args: Sequence[str]) -> List[str]:
-    """`voltagegpu verify bundle.json --offline` -> `voltage-verify verify bundle.json --offline`.
+    """`voltagegpu verify bundle.json --offline` -> voltage-verify's `verify bundle.json --offline`.
 
     Any voltage-verify subcommand (manifest, attest, quote, ...) passes through
     unchanged; with no argument, voltage-verify prints its own help.
@@ -24,7 +23,22 @@ def verify_argv(args: Sequence[str]) -> List[str]:
     rest = list(args)
     if rest and rest[0] not in VERIFY_SUBCOMMANDS and not rest[0].startswith("-"):
         rest = ["verify", *rest]
-    return [sys.executable, "-m", "voltage_verify", *rest]
+    return rest
+
+
+def run_voltage_verify(argv: List[str]) -> int:
+    """Call voltage-verify's entry point in this process.
+
+    Not `python -m voltage_verify`: that puts the current directory first on
+    sys.path, so a `voltage_verify.py` planted next to a downloaded bundle
+    would run instead of the real verifier.
+    """
+    module = importlib.import_module("voltage_verify.cli")
+    try:
+        return int(module.main(argv) or 0)
+    except SystemExit as exc:  # argparse --help / usage errors
+        code = exc.code
+        return code if isinstance(code, int) else (0 if code is None else 1)
 
 
 @click.command("verify", context_settings={"ignore_unknown_options": True, "allow_extra_args": True, "help_option_names": []})
@@ -43,8 +57,8 @@ def verify_cmd(args: Tuple[str, ...]) -> None:
     """
     if importlib.util.find_spec("voltage_verify") is None:
         fail('voltage-verify is not installed in this environment. Run: pip install voltage-verify', code=2)
-    # A list, never a shell: arguments reach voltage-verify exactly as typed.
-    raise click.exceptions.Exit(subprocess.call(verify_argv(args)))  # noqa: S603
+    # Arguments reach voltage-verify exactly as typed; no shell, no subprocess.
+    raise click.exceptions.Exit(run_voltage_verify(verify_argv(args)))
 
 
 _RETIRED = (
