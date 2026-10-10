@@ -57,9 +57,9 @@ volt = "volt.cli.main:main"
 Homepage = "https://voltagegpu.com"
 Documentation = "https://docs.voltagegpu.com/cli"
 "API reference" = "https://docs.voltagegpu.com/api-reference"
-Source = "https://github.com/Jabsama/VOLTAGEGPU-CLI/tree/release/1.3"
-Changelog = "https://github.com/Jabsama/VOLTAGEGPU-CLI/blob/release/1.3/CHANGELOG.md"
-Issues = "https://github.com/Jabsama/VOLTAGEGPU-CLI/issues"
+Source = "https://github.com/VoltageGPU/VOLTAGEGPU-CLI/tree/release/1.3"
+Changelog = "https://github.com/VoltageGPU/VOLTAGEGPU-CLI/blob/release/1.3/CHANGELOG.md"
+Issues = "https://github.com/VoltageGPU/VOLTAGEGPU-CLI/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["volt"]
