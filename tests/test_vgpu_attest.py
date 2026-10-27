@@ -40,8 +40,14 @@ def test_challenge_sizes_and_remote_command() -> None:
     gpu, cpu = attest.new_challenge("vm"), attest.new_challenge("cpu")
     assert len(gpu) == 64 and len(cpu) == 128 and gpu != attest.new_challenge("vm")
     assert attest.remote_command(gpu) == f"CHALLENGE={gpu} bash -s"
+    # SEV-SNP: the VMPL level is named, never left to snpguest 0.11.0 (which asks for 1 by default).
+    assert attest.remote_command(cpu, vmpl=0) == f"CHALLENGE={cpu} SNP_VMPL=0 bash -s"
+    assert attest.remote_command(cpu, vmpl=3) == f"CHALLENGE={cpu} SNP_VMPL=3 bash -s"
     with pytest.raises(AttestError):
         attest.remote_command("abc; rm -rf ~")
+    for bad in (4, -1, True, "0", 0.0):
+        with pytest.raises(AttestError):
+            attest.remote_command(cpu, vmpl=bad)
 
 
 def test_embedded_scripts_match_their_pinned_hash() -> None:
@@ -50,6 +56,14 @@ def test_embedded_scripts_match_their_pinned_hash() -> None:
         assert script.startswith(b"#!/usr/bin/env bash")
         assert hashlib.sha256(script).hexdigest() == attest.SCRIPT_SHA256[attest.SCRIPTS[kind]]
     assert attest.ARCHIVES == {"vm": "/tmp/proofs.tgz", "cpu": "/tmp/snp-proof.tgz"}
+
+
+def test_embedded_cpu_script_names_the_vmpl_and_no_longer_requires_1() -> None:
+    # 2026-10-27: the "VMPL: 1" of the first report was snpguest's default request, not the guest's level.
+    text = attest.load_script("cpu").decode("utf-8")
+    assert './snpguest report report.bin request.bin --vmpl "$SNP_VMPL"' in text
+    assert "SNP_VMPL=${SNP_VMPL:-0}" in text
+    assert "EXPECTED_VMPL" not in text and "paravisor" not in text
 
 
 def test_kind_without_attestation_is_refused() -> None:
@@ -106,7 +120,7 @@ def test_gpu_checksum_mismatch_fails(tmp_path: Path) -> None:
 ARK_MILAN = (FIXTURES / "ark-milan.pem").read_bytes()
 
 
-def _report(challenge: str, *, report_data: str | None = None, debug: bool = False, vmpl: int = 1) -> bytes:
+def _report(challenge: str, *, report_data: str | None = None, debug: bool = False, vmpl: int = 0) -> bytes:
     report = bytearray(1184)
     report[10] = 8 if debug else 0  # GUEST_POLICY bit 19 (DEBUG) is bit 3 of byte 0x0A
     report[48:52] = vmpl.to_bytes(4, "little")
@@ -169,6 +183,8 @@ def test_cpu_verified_with_a_chain_fetched_from_amd_in_a_new_folder(tmp_path: Pa
     assert Path(amd) != folder / "certs" and "certs" not in Path(amd).name
     assert set(run.cwds) == {str(folder)}
     assert result.facts["ark_family"] == "Milan"
+    # Requested at VMPL 0 (the default), and the report says 0.
+    assert result.facts["vmpl"] == 0 and result.facts["vmpl_requested"] == 0 and result.facts["vmpl_fallback"] is False
 
 
 def test_cpu_unknown_ark_from_amd_fetch_fails(tmp_path: Path) -> None:
@@ -184,12 +200,32 @@ def test_cpu_report_data_mismatch_fails(tmp_path: Path) -> None:
     assert not result.verified and result.status == "NOT_VERIFIED" and "report_data" in result.failed
 
 
-def test_cpu_debug_policy_or_unexpected_vmpl_fails(tmp_path: Path) -> None:
+def test_cpu_debug_policy_or_vmpl_other_than_requested_fails(tmp_path: Path) -> None:
     ch = "ab" * 64
     debug = attest.verify_cpu(_snp_dir(tmp_path / "a", ch, debug=True), ch, snpguest="snpguest", runner=FakeSnpguest())
     assert not debug.verified and "report.debug" in debug.failed
-    vmpl = attest.verify_cpu(_snp_dir(tmp_path / "b", ch, vmpl=0), ch, snpguest="snpguest", runner=FakeSnpguest())
-    assert not vmpl.verified and "report.vmpl" in vmpl.failed
+    # The VMPL field is the level requested: 2 for a request at 0, or 0 for a request at 1, is refused.
+    two = attest.verify_cpu(_snp_dir(tmp_path / "b", ch, vmpl=2), ch, snpguest="snpguest", runner=FakeSnpguest())
+    assert not two.verified and "report.vmpl" in two.failed
+    zero = attest.verify_cpu(_snp_dir(tmp_path / "c", ch, vmpl=0), ch, snpguest="snpguest", runner=FakeSnpguest(), vmpl=1)
+    assert not zero.verified and "report.vmpl" in zero.failed
+
+
+def test_cpu_vmpl_1_is_no_longer_required_any_level_requested_is_checked(tmp_path: Path) -> None:
+    ch = "ab" * 64
+    one = attest.verify_cpu(_snp_dir(tmp_path, ch, vmpl=1), ch, snpguest="snpguest", runner=FakeSnpguest(), vmpl=1)
+    assert one.verified, one.failed
+    assert one.facts["vmpl"] == 1 and one.facts["vmpl_fallback"] is False
+
+
+def test_cpu_vmpl_1_after_a_refused_vmpl_0_is_accepted_and_reported(tmp_path: Path) -> None:
+    # The script asks again at VMPL 1, saying so, when VMPL 0 is refused: a weaker claim, reported as such.
+    ch = "ab" * 64
+    result = attest.verify_cpu(_snp_dir(tmp_path, ch, vmpl=1), ch, snpguest="snpguest", runner=FakeSnpguest())
+    assert result.verified, result.failed
+    assert result.facts["vmpl"] == 1 and result.facts["vmpl_requested"] == 0 and result.facts["vmpl_fallback"] is True
+    check = next(c for c in result.checks if c["name"] == "report.vmpl")
+    assert check["ok"] and "not at VMPL 0" in check["detail"]
 
 
 def test_cpu_chain_refused_by_snpguest_fails(tmp_path: Path) -> None:
@@ -212,4 +248,5 @@ def test_cpu_without_local_snpguest_is_incomplete_not_verified(tmp_path: Path) -
 
 
 def test_in_vm_script_exit_codes_have_names() -> None:
-    assert attest.SNP_SCRIPT_EXIT == {2: "challenge.format", 3: "report_data", 4: "report.debug", 5: "report.vmpl", 6: "amd.ark"}
+    assert attest.SNP_SCRIPT_EXIT == {2: "challenge.format", 3: "report_data", 4: "report.debug", 5: "report.vmpl", 6: "amd.ark",
+                                      7: "report.request"}

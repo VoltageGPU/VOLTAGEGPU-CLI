@@ -158,8 +158,11 @@ script in the machine (`two-proofs-in-the-vm.sh` for a Confidential VM,
 `snp-proof-in-the-vm.sh` for a Confidential CPU tier, both embedded and pinned
 by SHA-256), copies the archive back and verifies it here: `voltage-verify`
 for Intel TDX + NVIDIA (`pip install 'voltagegpu-cli[verify]'`, `--offline`
-for no network). For SEV-SNP: REPORT_DATA equals the challenge, the report
-policy forbids debug and the VMPL is 1, then the AMD chain and the VCEK are
+for no network). For SEV-SNP: the report is requested at `--vmpl` (0 by
+default, sent as `SNP_VMPL`; if VMPL 0 is refused, the script says so and asks
+again at 1, and the result reports it), REPORT_DATA equals the challenge, the
+report policy forbids debug and its VMPL field is the level requested (the
+guest kernel uses VMPCK0, consistent with VMPL 0, no SVSM), then the AMD chain and the VCEK are
 fetched again from AMD into a new folder (`snpguest 0.11.0 fetch ca` / `fetch
 vcek` on your machine), the ARK must be one of the AMD roots pinned in the
 script, and `snpguest verify certs` / `verify attestation` run with those

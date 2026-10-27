@@ -14,7 +14,10 @@ All notable changes to `voltagegpu-cli` are documented here. The format follows
 - `--ttl` on every `vgpu up`, translated to the auto-stop of each product and
   checked against its bounds before anything is sent.
 - `vgpu attest`: challenge drawn locally, embedded proof scripts pinned by
-  SHA-256, archive extracted safely and verified locally.
+  SHA-256, archive extracted safely and verified locally. For Confidential
+  CPU the SEV-SNP report is requested at `--vmpl` (0 by default), and its VMPL
+  field must be the level requested (VMPL 1 is no longer required: it was
+  snpguest's default request, not the guest's level).
 - `vgpu mcp`, a local MCP server over stdio with the same tools and guards
   (`up` needs `ttl` and `max_hourly_price`, `rm` needs `confirm`), plus
   `inference` on the OpenAI-compatible API with a `vgpu_` key.

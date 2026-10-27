@@ -6,7 +6,9 @@ here too. ``verified`` is True only when every required check passed:
 
     vm   (Intel TDX + NVIDIA GPU) ``voltage-verify`` on bundle.json, with the challenge we drew
     cpu  (AMD SEV-SNP) REPORT_DATA of report.bin equals our challenge, policy without
-         debug at VMPL 1, and the AMD chain fetched again from AMD here (never the
+         debug, VMPL field equal to the level requested (SNP_VMPL, 0 by default; the
+         script asks again at 1, saying so, when 0 is refused), and the AMD chain
+         fetched again from AMD here (never the
          certificates of the archive, which come from the VM), pinned ARK, checked by
          a LOCAL ``snpguest``. Without snpguest or without AMD, the result is
          INCOMPLETE, never VERIFIED.
@@ -31,7 +33,7 @@ from typing import Any, Callable, Dict, List, Optional
 SCRIPTS = {"vm": "two-proofs-in-the-vm.sh", "cpu": "snp-proof-in-the-vm.sh"}
 SCRIPT_SHA256 = {
     "two-proofs-in-the-vm.sh": "11cf09cf79ecb43924d9c3f3e6eb8120a4a7e80cd86e3a49679e95668092f9e3",
-    "snp-proof-in-the-vm.sh": "cbc27967cf602249f3b09dfa54bf82c0b9d4bea004450095c9af803cd98ed8d5",
+    "snp-proof-in-the-vm.sh": "111ee5dce0f26e22ff903ccd1d097d9e6444676336d398a9a927e14cae6f645d",
 }
 ARCHIVES = {"vm": "/tmp/proofs.tgz", "cpu": "/tmp/snp-proof.tgz"}  # noqa: S108 (written by the scripts, inside the VM)
 TEE = {"vm": "Intel TDX", "cpu": "AMD SEV-SNP"}
@@ -72,11 +74,19 @@ def new_challenge(kind: str) -> str:
     return secrets.token_hex(_CHALLENGE_BYTES[kind])
 
 
-def remote_command(challenge: str) -> str:
-    """The command run over SSH; the script itself is sent on stdin."""
+def remote_command(challenge: str, vmpl: Optional[int] = None) -> str:
+    """The command run over SSH; the script itself is sent on stdin.
+
+    ``vmpl`` (SEV-SNP only) is the VMPL level the script requests, as SNP_VMPL: always named,
+    because snpguest 0.11.0 asks for VMPL 1 when it is not.
+    """
     if not _HEX_RE.fullmatch(challenge or ""):
         raise AttestError("The challenge must be lowercase hex (32 or 64 bytes).")
-    return f"CHALLENGE={challenge} bash -s"
+    if vmpl is None:
+        return f"CHALLENGE={challenge} bash -s"
+    if type(vmpl) is not int or not 0 <= vmpl <= 3:
+        raise AttestError("The VMPL level must be 0, 1, 2 or 3.")
+    return f"CHALLENGE={challenge} SNP_VMPL={vmpl} bash -s"
 
 
 def load_script(kind: str) -> bytes:
@@ -178,9 +188,9 @@ def verify_gpu(folder: Path, challenge: str, *, offline: bool = False) -> Attest
 Runner = Callable[..., Any]
 
 # Exit codes of snp-proof-in-the-vm.sh, as check names (also used for the checks done here).
-SNP_SCRIPT_EXIT = {2: "challenge.format", 3: "report_data", 4: "report.debug", 5: "report.vmpl", 6: "amd.ark"}
-# The guest runs at VMPL 1 under the provider's paravisor (same value as EXPECTED_VMPL in the script).
-_EXPECTED_VMPL = 1
+# 5: the VMPL field is not the level requested; 7: the report request was refused (at every level tried).
+SNP_SCRIPT_EXIT = {2: "challenge.format", 3: "report_data", 4: "report.debug", 5: "report.vmpl", 6: "amd.ark",
+                   7: "report.request"}
 _ARK_PIN_RE = re.compile(r"^ARK_([A-Z]+)_SHA256=([0-9a-f]{64})$", re.MULTILINE)
 _PEM_RE = re.compile(rb"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----", re.DOTALL)
 
@@ -202,16 +212,31 @@ def _ark_family(pem_path: Path) -> Optional[str]:
     return next((family for family, pin in ark_pins().items() if der and pin == digest), None)
 
 
-def _policy_checks(data: bytes) -> List[Dict[str, Any]]:
-    """Same checks as ``--check-report-policy``: GUEST_POLICY DEBUG bit off, VMPL as expected."""
-    if len(data) < 52:
+def _report_vmpl(data: bytes) -> Optional[int]:
+    """The VMPL field of the report (4 bytes at 0x30): the level the request asked for."""
+    return int.from_bytes(data[48:52], "little") if len(data) >= 52 else None
+
+
+def _policy_checks(data: bytes, vmpl: int) -> List[Dict[str, Any]]:
+    """Same checks as ``--check-report-policy``: GUEST_POLICY DEBUG bit off, VMPL field = the level requested.
+
+    The script asks for ``vmpl`` and, when VMPL 0 is refused, says so and asks again at VMPL 1:
+    a VMPL 1 report for a request at 0 is that fallback, a weaker claim, accepted and reported.
+    """
+    got = _report_vmpl(data)
+    if got is None:
         return [{"name": "report.debug", "ok": False, "detail": "report too short"}]
     debug = bool(data[10] & 8)
-    vmpl = int.from_bytes(data[48:52], "little")
+    if got == vmpl:
+        detail = f"VMPL field {got}, the level requested"
+    elif vmpl == 0 and got == 1:
+        detail = "VMPL field 1: the request at VMPL 0 was refused, so the guest is not at VMPL 0 (the script asked again at VMPL 1)"
+    else:
+        detail = f"VMPL field {got}, requested {vmpl}"
     return [
         {"name": "report.debug", "ok": not debug,
          "detail": "debug not allowed" if not debug else "policy allows debug: the host could read the guest memory"},
-        {"name": "report.vmpl", "ok": vmpl == _EXPECTED_VMPL, "detail": f"VMPL {vmpl}, expected {_EXPECTED_VMPL}"},
+        {"name": "report.vmpl", "ok": got == vmpl or (vmpl == 0 and got == 1), "detail": detail},
     ]
 
 
@@ -225,10 +250,11 @@ def _incomplete(result: AttestResult, detail: str) -> AttestResult:
     return result
 
 
-def verify_cpu(folder: Path, challenge: str, *, snpguest: Optional[str], runner: Runner) -> AttestResult:
+def verify_cpu(folder: Path, challenge: str, *, snpguest: Optional[str], runner: Runner, vmpl: int = 0) -> AttestResult:
     """The client-side SEV-SNP check of SNP_VERIFY_COMMANDS (voltagegpu.com, 27/10/2026).
 
-    REPORT_DATA == our challenge, policy (no debug, VMPL 1), then the AMD chain and
+    REPORT_DATA == our challenge, policy (no debug, VMPL field = ``vmpl``, the level
+    requested; 1 is accepted for 0 as the script's fallback, and reported), then the AMD chain and
     the VCEK fetched again FROM AMD into a new folder, the pinned ARK, and
     ``snpguest verify certs`` / ``verify attestation`` with those certificates.
     The certificates of the archive come from the VM and are never used.
@@ -243,10 +269,12 @@ def verify_cpu(folder: Path, challenge: str, *, snpguest: Optional[str], runner:
     checks.append({"name": "report_data", "ok": match,
                    "detail": "REPORT_DATA is the challenge drawn here" if match
                    else "REPORT_DATA differs from our challenge (replay or foreign report)"})
-    checks += _policy_checks(data)
+    checks += _policy_checks(data, vmpl)
+    got = _report_vmpl(data)
+    level = {"vmpl": got, "vmpl_requested": vmpl, "vmpl_fallback": vmpl == 0 and got == 1}
     chain_txt = folder / "verify.txt"
     in_vm = chain_txt.read_text(encoding="utf-8", errors="replace")[:4000] if chain_txt.is_file() else None
-    result = _result(TEE["cpu"], challenge, checks, bundle_path=str(report), in_vm_chain_report=in_vm)
+    result = _result(TEE["cpu"], challenge, checks, bundle_path=str(report), in_vm_chain_report=in_vm, facts=level)
     if snpguest is None:
         return _incomplete(result, "snpguest 0.11.0 not found on this machine: AMD chain not checked here")
     amd = Path(tempfile.mkdtemp(prefix="amd-chain-", dir=folder.parent))  # new folder, fed by AMD only
@@ -261,7 +289,7 @@ def verify_cpu(folder: Path, challenge: str, *, snpguest: Optional[str], runner:
         ok = runner(argv, cwd=str(folder), capture_output=True, text=True, timeout=120).returncode == 0
         checks.append({"name": name, "ok": ok, "detail": f"{' '.join(argv[1:3])} with the chain fetched from AMD: {'OK' if ok else 'FAILED'}"})
     return _result(TEE["cpu"], challenge, checks, bundle_path=str(report), in_vm_chain_report=in_vm,
-                   facts={"ark_family": family, "amd_chain_folder": str(amd)})
+                   facts={**level, "ark_family": family, "amd_chain_folder": str(amd)})
 
 
 __all__ = ["ARCHIVES", "AttestError", "AttestResult", "SCRIPTS", "SCRIPT_SHA256", "TEE", "ToolMissing", "extract_archive",

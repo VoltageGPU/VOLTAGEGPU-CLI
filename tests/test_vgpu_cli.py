@@ -358,10 +358,39 @@ def test_exit_codes_are_documented() -> None:
 
 def test_attest_cpu_in_vm_exit_code_is_named(api, capsys, monkeypatch, tmp_path) -> None:
     api.on("GET", "/api/volt/pods", body=[CPU_LISTED])
-    for rc, name in ((4, "report.debug"), (5, "report.vmpl"), (6, "amd.ark")):
+    for rc, name in ((4, "report.debug"), (5, "report.vmpl"), (6, "amd.ark"), (7, "report.request")):
         monkeypatch.setattr(vgpu_mod, "_run", FakeRun(codes=[rc]))
         code, out, _ = run(capsys, "attest", "wrk-2", "--out", str(tmp_path / f"p{rc}"), "--json")
         assert code == 8 and json.loads(out)["failed"] == [name]
+
+
+def test_attest_cpu_names_the_vmpl_level(api, capsys, monkeypatch, tmp_path) -> None:
+    # 2026-10-27: SNP_VMPL is always sent (0 by default, or --vmpl), never left to snpguest's default (1).
+    api.on("GET", "/api/volt/pods", body=[CPU_LISTED])
+    ch = "cd" * 64
+    monkeypatch.setattr(vgpu_mod.attest, "new_challenge", lambda kind: ch)
+    for args, level in (((), 0), (("--vmpl", "1"), 1)):
+        fake = FakeRun(codes=[3])
+        monkeypatch.setattr(vgpu_mod, "_run", fake)
+        code, out, _ = run(capsys, "attest", "wrk-2", *args, "--out", str(tmp_path / f"v{level}"), "--json")
+        assert code == 8 and fake.calls[0][-1] == f"CHALLENGE={ch} SNP_VMPL={level} bash -s"
+        assert f"SNP_VMPL={level}" in json.loads(out)["detail"]
+    assert run(capsys, "attest", "wrk-2", "--vmpl", "4", "--out", str(tmp_path / "v4"))[0] == 2
+
+
+def test_attest_human_output_reports_the_vmpl_fallback(api, capsys, monkeypatch) -> None:
+    data = {"name": "c1", "id": "wrk-2", "verified": True, "status": "VERIFIED", "tee": "AMD SEV-SNP", "challenge": "ab" * 64,
+            "failed": [], "facts": {"vmpl": 1, "vmpl_requested": 0, "vmpl_fallback": True}}
+    seen: dict = {}
+
+    def fake_attest(client, ref, **kwargs):
+        seen.update(kwargs)
+        return data, 0
+
+    monkeypatch.setattr(vgpu_mod, "attest_machine", fake_attest)
+    code, out, _ = run(capsys, "attest", "wrk-2")
+    assert code == 0 and "VMPL 0 refused" in out and "not at VMPL 0" in out
+    assert seen["vmpl"] == 0
 
 
 # ------------------------------------------------------------------ own keys (API since fbadd6ac)

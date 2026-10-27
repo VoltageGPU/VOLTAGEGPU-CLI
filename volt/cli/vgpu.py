@@ -307,8 +307,12 @@ def find_instance(client: Any, ref: str) -> Instance:
     return inst
 
 
-def attest_machine(client: Any, ref: str, *, out: Optional[str], offline: bool, identity: Optional[str]) -> Tuple[Dict[str, Any], int]:
-    """The whole `vgpu attest` (CLI and local MCP server): result and exit code (0, 8 or 9)."""
+def attest_machine(client: Any, ref: str, *, out: Optional[str], offline: bool, identity: Optional[str],
+                   vmpl: int = 0) -> Tuple[Dict[str, Any], int]:
+    """The whole `vgpu attest` (CLI and local MCP server): result and exit code (0, 8 or 9).
+
+    ``vmpl``: Confidential CPU only, the VMPL level the SEV-SNP report is requested at (SNP_VMPL).
+    """
     inst = find_instance(client, ref)
     try:
         script = attest.load_script(inst.kind)
@@ -320,13 +324,15 @@ def attest_machine(client: Any, ref: str, *, out: Optional[str], offline: bool, 
     folder = Path(out or f"vgpu-attest-{inst.id}-{int(time.time())}")
     folder.mkdir(parents=True, exist_ok=True)
     key = _identity(identity)
-    proc = _run(exec_argv(target, inst.id, attest.remote_command(challenge), identity=key, ssh_bin=ssh),
+    level = vmpl if inst.kind == "cpu" else None
+    proc = _run(exec_argv(target, inst.id, attest.remote_command(challenge, level), identity=key, ssh_bin=ssh),
                 input=script, capture_output=True, timeout=1800)
     log = folder / "in-the-vm.log"
     log.write_bytes((proc.stdout or b"") + (proc.stderr or b""))
     if proc.returncode != 0 and inst.kind == "cpu" and proc.returncode in attest.SNP_SCRIPT_EXIT:
         name = attest.SNP_SCRIPT_EXIT[proc.returncode]
-        return _attest_failure(inst.kind, challenge, name, f"the proof script refused the report ({name}, exit {proc.returncode}); see {log}")
+        return _attest_failure(inst.kind, challenge, name,
+                               f"the proof script refused the report ({name}, exit {proc.returncode}, SNP_VMPL={level}); see {log}")
     if proc.returncode != 0:
         return _attest_failure(inst.kind, challenge, "in_vm_script", f"the proof script exited with {proc.returncode}; see {log}")
     archive = folder / Path(attest.ARCHIVES[inst.kind]).name
@@ -338,7 +344,7 @@ def attest_machine(client: Any, ref: str, *, out: Optional[str], offline: bool, 
         if inst.kind == "vm":
             result = attest.verify_gpu(extracted, challenge, offline=offline)
         else:
-            result = attest.verify_cpu(extracted, challenge, snpguest=_tool("snpguest"), runner=_run)
+            result = attest.verify_cpu(extracted, challenge, snpguest=_tool("snpguest"), runner=_run, vmpl=vmpl)
     except attest.ToolMissing as exc:
         raise Fail(9, str(exc)) from None
     except attest.AttestError as exc:
@@ -352,15 +358,20 @@ def attest_machine(client: Any, ref: str, *, out: Optional[str], offline: bool, 
 @click.option("--offline", is_flag=True, help="GPU: use the collateral inside the bundle, no network call.")
 @click.option("--out", type=click.Path(file_okay=False), help="Folder for the archive and the report.")
 @click.option("-i", "--identity", help="Private key file (default: VGPU_SSH_KEY).")
+@click.option("--vmpl", type=click.IntRange(0, 3), default=0, show_default=True,
+              help="Confidential CPU: VMPL level the SEV-SNP report is requested at (the script asks again at 1 if 0 is refused).")
 @click.option("--json", "as_json", is_flag=True)
 @click.pass_context
-def attest_cmd(ctx: click.Context, ref: str, offline: bool, out: Optional[str], identity: Optional[str], as_json: bool) -> None:
+def attest_cmd(ctx: click.Context, ref: str, offline: bool, out: Optional[str], identity: Optional[str], vmpl: int,
+               as_json: bool) -> None:
     """Prove the machine is a genuine TEE: challenge drawn here, proofs made in the VM, checked here."""
-    data, code = attest_machine(_state(ctx).client(), ref, out=out, offline=offline, identity=identity)
+    data, code = attest_machine(_state(ctx).client(), ref, out=out, offline=offline, identity=identity, vmpl=vmpl)
     failed = data.get("failed") or []
     human = f"{data['status']}: {data['tee']}, challenge {data['challenge'][:16]}..." + (f" failed: {', '.join(failed)}" if failed else "")
     if data.get("detail"):
         human += f" ({data['detail']})"
+    if (data.get("facts") or {}).get("vmpl_fallback"):
+        human += " (VMPL 0 refused: the guest is not at VMPL 0; report requested at VMPL 1)"
     _emit(as_json, data, human)
     raise click.exceptions.Exit(code)
 
