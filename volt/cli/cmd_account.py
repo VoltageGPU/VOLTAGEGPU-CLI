@@ -107,7 +107,10 @@ def balance_cmd(state: AppState, as_json: bool) -> None:
     if as_json:
         echo_json(bal.to_dict())
         return
-    console.print(f"Balance  [bold green]{money(bal.balance)}[/bold green] {esc(bal.currency)}")
+    if bal.balance is None:
+        info(f"Balance  hidden: {esc(bal.balance_hidden or 'this key cannot read the account balance')}")
+    else:
+        console.print(f"Balance  [bold green]{money(bal.balance)}[/bold green] {esc(bal.currency)}")
     if bal.active_pods is not None:
         info(f"Running  {bal.active_pods} pod{'s' if bal.active_pods != 1 else ''}")
     hint(f"Top up: {esc(bal.top_up_url)}")

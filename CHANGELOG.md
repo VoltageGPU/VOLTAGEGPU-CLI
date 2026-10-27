@@ -4,6 +4,26 @@ All notable changes to `voltagegpu-cli` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.0.0] - 2026-10-27
+
+### Added
+- `vgpu`, a second command for scripts and AI agents: `ls`, `up`, `ps`,
+  `exec` (with `-d`), `scp`, `rm`, `attest`, `whoami`. One catalogue for
+  Confidential VMs (Intel TDX), Confidential CPU (AMD SEV-SNP), standard GPU
+  pods, dedicated machines and sandboxes, cheapest first.
+- `--ttl` on every `vgpu up`, translated to the auto-stop of each product and
+  checked against its bounds before anything is sent.
+- `vgpu attest`: challenge drawn locally, embedded proof scripts pinned by
+  SHA-256, archive extracted safely and verified locally.
+- Documented exit codes, including 6 for HTTP 402 (`API_KEY_BUDGET_EXCEEDED`)
+  and 4 for `API_KEY_SCOPE_MISSING`.
+
+### Changed
+- `voltagegpu balance` no longer shows `$0.00` when the key cannot read the
+  balance (agent key without the billing scope): it says the balance is hidden.
+- `voltagegpu` and `volt` are otherwise unchanged. The major version marks the new
+  command and its exit-code contract.
+
 ## [1.3.1] - 2026-10-10
 
 Security hardening after an independent review of 1.3.0. Upgrade recommended.

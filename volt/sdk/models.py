@@ -233,18 +233,22 @@ class SshKey:
 
 @dataclass(frozen=True)
 class Balance:
-    balance: float
+    """``balance`` is None for an agent key without the billing scope (``balance_hidden`` says why)."""
+
+    balance: Optional[float]
     currency: str = "USD"
     active_pods: Optional[int] = None
     top_up_url: str = "https://voltagegpu.com/billing"
+    balance_hidden: Optional[str] = None
 
     @classmethod
     def from_api(cls, raw: Mapping[str, Any]) -> "Balance":
         return cls(
-            balance=_num(raw.get("balance")) or 0.0,
+            balance=_num(raw.get("balance")),
             currency=_str(raw.get("currency")) or "USD",
             active_pods=_int(raw.get("active_pods", raw.get("activePods"))),
             top_up_url=_str(raw.get("top_up_url")) or "https://voltagegpu.com/billing",
+            balance_hidden=_str(raw.get("balance_hidden")),
         )
 
     def to_dict(self) -> Dict[str, Any]:

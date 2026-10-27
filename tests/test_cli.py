@@ -258,4 +258,4 @@ def test_main_without_a_key(monkeypatch, tmp_path, capsys):
 
 def test_version_and_module_entry():
     out = subprocess.run([__import__("sys").executable, "-m", "volt", "--version"], capture_output=True, text=True)
-    assert out.returncode == 0 and "1.3.1" in out.stdout
+    assert out.returncode == 0 and __import__("volt").__version__ in out.stdout

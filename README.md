@@ -114,6 +114,76 @@ voltagegpu pods stop "$POD" --yes
 Exit codes: `0` success, `1` API or runtime error, `2` usage error or missing
 confirmation.
 
+## `vgpu`: the short command for scripts and AI agents
+
+Installed with the package, next to `voltagegpu`. The key comes from
+`VOLT_API_KEY` or `VOLTAGEGPU_API_KEY` (or `voltagegpu login`) and is never
+printed. Give an agent a limited key (scopes, its own machines only, a
+daily budget) from https://voltagegpu.com/api-keys, never your full key.
+
+```bash
+vgpu ls --json                                   # every offer, cheapest first
+vgpu ls --kind vm --gpu H100                     # vm | cpu | standard | baremetal | sandbox
+vgpu up rtx6000b-small --name train1 --ttl 2h -y --json
+vgpu ps --json
+vgpu exec train1 "nvidia-smi"                    # returns the remote exit code
+vgpu exec train1 -d "python train.py"            # background: prints PID and log path
+vgpu scp train1 /home/ubuntu/out.tgz ./out.tgz   # --up to copy the other way
+vgpu attest train1                               # Confidential VM or Confidential CPU only
+vgpu rm train1 -y
+vgpu whoami                                      # scopes, budgets, spend, balance
+vgpu mcp                                         # local MCP server (stdio) for agents
+```
+
+`--ttl` is mandatory and becomes the auto-stop of each product, rounded up,
+refused locally when out of bounds: Confidential VM and CPU up to 720h,
+standard pods 1h to 720h (whole hours), dedicated machines 1h to 72h (whole
+hours), sandboxes up to 7d. `up` asks for confirmation unless `-y` is given,
+and fails without `-y` when not run in a terminal. A deploy that gets no
+answer is never retried: run `vgpu ps` first.
+
+`exec`, `scp` and `attest` use your local SSH key (`-i`, or `VGPU_SSH_KEY`).
+The first connection to a machine records its host key in
+`~/.volt/known_hosts.d/<id>` (trust on first use); a changed key is refused.
+Names given at `up` are kept in `~/.volt/vgpu-names.json`; ids work too.
+
+Confidential VMs and CPU tiers bind the SSH keys already on the account.
+Dedicated machines and sandboxes take key ids: by default every key of the
+account, but a key limited to its own machines cannot read them, so pass
+`--ssh-key-id ID` (repeatable). For such a key `whoami` and `voltagegpu
+balance` show the balance as hidden: only a full key reads it.
+
+`vgpu attest` draws a challenge on your machine, runs the published proof
+script in the machine (`two-proofs-in-the-vm.sh` for a Confidential VM,
+`snp-proof-in-the-vm.sh` for a Confidential CPU tier, both embedded and pinned
+by SHA-256), copies the archive back and verifies it here: `voltage-verify`
+for Intel TDX + NVIDIA (`pip install 'voltagegpu-cli[verify]'`, `--offline`
+for no network). For SEV-SNP: REPORT_DATA equals the challenge, the report
+policy forbids debug and the VMPL is 1, then the AMD chain and the VCEK are
+fetched again from AMD into a new folder (`snpguest 0.11.0 fetch ca` / `fetch
+vcek` on your machine), the ARK must be one of the AMD roots pinned in the
+script, and `snpguest verify certs` / `verify attestation` run with those
+certificates, never the ones in the archive (they come from the VM). Without
+a local `snpguest`, or when the AMD key server cannot be reached, the result
+is `INCOMPLETE`, never `VERIFIED`. Standard pods, dedicated machines and sandboxes have no tenant
+attestation and are refused.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | ok |
+| 1 | error (including a deploy that got no answer) |
+| 2 | usage: bad option, `--ttl` out of bounds, missing `-y` |
+| 3 | API key missing, malformed or refused |
+| 4 | API key scope missing (`API_KEY_SCOPE_MISSING`), or account resource refused to a key limited to its own machines (`API_KEY_ACCOUNT_RESOURCE`) |
+| 5 | not found (machine or tier) |
+| 6 | balance too low or API key budget exceeded (`API_KEY_BUDGET_EXCEEDED`, HTTP 402): stop, nothing was charged |
+| 7 | unavailable: sold out, over `--max-price`, rate limited, offer closed |
+| 8 | attestation failed |
+| 9 | attestation incomplete, or a local tool is missing (ssh, scp, voltage-verify) |
+
+With `--json`, an error is also printed on stdout as
+`{"error": {"code", "message", "exit_code", ...}}`.
+
 ## Python SDK
 
 ```python

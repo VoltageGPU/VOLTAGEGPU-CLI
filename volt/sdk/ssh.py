@@ -124,8 +124,8 @@ def safe_ssh_command(command: Optional[str]) -> Optional[str]:
         return None
 
 
-def find_ssh_binary(env_path: Optional[str] = None, cwd: Optional[str] = None) -> Optional[str]:
-    """Locate ``ssh`` on PATH, never in the current directory.
+def find_ssh_binary(env_path: Optional[str] = None, cwd: Optional[str] = None, name: str = "ssh") -> Optional[str]:
+    """Locate ``ssh`` (or ``scp``, ``snpguest``: ``name``) on PATH, never in the current directory.
 
     ``shutil.which`` on Windows looks in the current directory first, so a
     ``ssh.exe`` or ``ssh.bat`` planted in a downloaded folder would run. Only
@@ -138,17 +138,17 @@ def find_ssh_binary(env_path: Optional[str] = None, cwd: Optional[str] = None) -
     raw = os.environ.get("PATH", "") if env_path is None else env_path
     if sys.platform.startswith("win"):
         exts = [e.lower() for e in os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD").split(";") if e]
-        names = [f"ssh{e}" for e in exts if e in (".exe", ".com")]  # never a .bat/.cmd script
+        names = [f"{name}{e}" for e in exts if e in (".exe", ".com")]  # never a .bat/.cmd script
     else:
-        names = ["ssh"]
+        names = [name]
     for entry in raw.split(os.pathsep):
         entry = entry.strip().strip('"')
         if not entry or not os.path.isabs(entry):
             continue
         if os.path.normcase(os.path.realpath(entry)) == here:
             continue
-        for name in names:
-            candidate = os.path.join(entry, name)
+        for exe in names:
+            candidate = os.path.join(entry, exe)
             if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
                 return candidate
     return None

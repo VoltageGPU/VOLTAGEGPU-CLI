@@ -139,3 +139,18 @@ def test_network_error_message(cli_env, capsys):
         main(["pods", "list"])
     assert exit_info.value.code == 1
     assert "Could not reach" in capsys.readouterr().err
+
+
+def test_balance_hidden_for_an_agent_key(cli_env):
+    """Since 27/10/2026 a limited key without billing gets balance: null and balance_hidden."""
+    hidden = "This agent key cannot read the account balance (billing scope, full keys only)."
+    cli_env.on("GET", "/api/volt/balance", body={"success": True, "balance": None, "currency": "USD",
+                                                 "active_pods": 1, "balance_hidden": hidden})
+    from click.testing import CliRunner
+
+    from volt.cli.main import cli
+
+    result = CliRunner().invoke(cli, ["balance"], catch_exceptions=False)
+    assert result.exit_code == 0 and "$0.00" not in result.output and "cannot read the account balance" in result.output
+    data = json.loads(CliRunner().invoke(cli, ["balance", "--json"], catch_exceptions=False).output)
+    assert data["balance"] is None and data["balance_hidden"].startswith("This agent key")

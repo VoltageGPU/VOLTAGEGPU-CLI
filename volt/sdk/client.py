@@ -95,6 +95,10 @@ class VoltageGPUClient:
             raise ApiError.from_response(response.status_code, body)
         return body
 
+    def call(self, method: str, path: str, *, params: Optional[Dict[str, Any]] = None, json: Any = None) -> Any:
+        """Any route of the public API, same error handling (used by `vgpu` and the local MCP server)."""
+        return self._request(method, path, params=params, json=json)
+
     # -------------------------------------------------------------- machines
 
     def list_machines(self, kind: str = "all") -> List[Machine]:
