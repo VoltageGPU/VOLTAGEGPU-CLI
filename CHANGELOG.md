@@ -23,6 +23,9 @@ All notable changes to `voltagegpu-cli` are documented here. The format follows
   `inference` on the OpenAI-compatible API with a `vgpu_` key.
 - Documented exit codes, including 6 for HTTP 402 (`API_KEY_BUDGET_EXCEEDED`)
   and 4 for `API_KEY_SCOPE_MISSING`.
+- `vgpu up --ssh-key-id` (`ssh_key_ids` in `vgpu mcp`) on a standard GPU too:
+  one key id, needed when the account has several SSH keys. Without it, the
+  API's 400 becomes a clear message (exit 2, `SSH_KEY_ID_REQUIRED`).
 
 ### Changed
 - `voltagegpu balance` no longer shows `$0.00` when the key cannot read the

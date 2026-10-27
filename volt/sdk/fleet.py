@@ -181,7 +181,12 @@ def deploy(client: Any, offer: Offer, name: str, ttl: TtlPlan, *, image: Optiona
         pod_id, price, secret = raw.get("workloadUid") or raw.get("podId"), raw.get("hourlyPrice"), raw.get("sudoPassword")
         hard_stop = raw.get("hardStopAt")
     elif offer.kind == "standard":
-        raw = client.call("POST", "/volt/pods", json={"provider": "standard", "name": name, "machine_id": offer.tier, **ttl.fields})
+        # One SSH key (ssh_key_id). Without it the API takes the account's only key, and
+        # answers 400 when there are several: the key list is never read here (an own key cannot).
+        if ssh_key_ids and len(ssh_key_ids) > 1:
+            raise ValueError("A standard GPU takes one SSH key: give a single SSH key id.")
+        key = {"ssh_key_id": ssh_key_ids[0]} if ssh_key_ids else {}
+        raw = client.call("POST", "/volt/pods", json={"provider": "standard", "name": name, "machine_id": offer.tier, **ttl.fields, **key})
         pod = raw.get("pod") or {}
         pod_id, price, secret, hard_stop = pod.get("id"), pod.get("hourly_price"), None, None
     elif offer.kind == "baremetal":

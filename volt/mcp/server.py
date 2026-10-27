@@ -56,7 +56,9 @@ TOOLS: List[Dict[str, Any]] = [
          "ttl": {"type": "string", "description": "deadline such as 45m, 1h, 6h, 2d; the machine stops by itself then"},
          "max_hourly_price": {"type": "number", "description": "refuse if the hourly price is above this (USD)"},
          "kind": {"type": "string", "enum": list(KINDS)}, "image": {"type": "string"},
-         "ssh_key_ids": {"type": "array", "items": {"type": "string"}, "description": "for baremetal and sandbox"},
+         "ssh_key_ids": {"type": "array", "items": {"type": "string"},
+                         "description": "SSH key ids: one for standard (needed when the account has several keys), "
+                                        "one or more for baremetal and sandbox"},
          "wait": {"type": "boolean", "description": "wait until SSH answers (default true)"}},
          "required": ["tier", "name", "ttl", "max_hourly_price"], "additionalProperties": False}},
     {"name": "ps", "description": "Machines of this key with status, price and SSH readiness.",
@@ -208,12 +210,19 @@ class McpServer:
         known = names.load().get(name)
         if known and resolve(list_instances(self._client), known.get("id", "")):
             raise ops.Fail(2, f"A running machine is already named {name!r}.")
+        given = args.get("ssh_key_ids") or []
+        if not isinstance(given, (list, str)):
+            raise ops.Fail(2, "ssh_key_ids must be a list of SSH key ids.")
+        keys = [given] if isinstance(given, str) else [str(k) for k in given]
         try:
-            result = deploy(self._client, offer, name, plan, image=args.get("image"), ssh_key_ids=list(args.get("ssh_key_ids") or []) or None)
+            result = deploy(self._client, offer, name, plan, image=args.get("image"), ssh_key_ids=keys or None)
         except ApiError as exc:
             if exc.status_code == 0:
                 raise ops.Fail(1, "The deploy request got no answer: a machine may have started. Call ps before trying again; "
                                   "never retry a deploy blindly.", "NO_ANSWER") from None
+            needed = ops.ssh_key_needed(exc, offer.kind, bool(keys), "ssh_key_ids")
+            if needed:
+                raise needed from None
             raise
         result.pop("_sudo_password", None)  # never handed to an agent
         names.put(name, {"id": result["id"], "kind": result["kind"], "tier": tier})

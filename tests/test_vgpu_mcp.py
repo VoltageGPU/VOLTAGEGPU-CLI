@@ -15,7 +15,7 @@ import volt.mcp.server as mcp_mod
 from volt.mcp.server import McpServer
 
 from .conftest import TEST_KEY
-from .test_vgpu_cli import SNAPSHOT, VM_LISTED, VM_TIERS, FakeRun, machines, vm_deploy
+from .test_vgpu_cli import SEVERAL_KEYS, SNAPSHOT, STANDARD_TIER, VM_LISTED, VM_TIERS, FakeRun, machines, vm_deploy
 
 INFERENCE_KEY = "vgpu_" + "c" * 40
 
@@ -102,6 +102,26 @@ def test_up_budget_exceeded_says_stop(server, api) -> None:
     result = call(server, "up", {"tier": "rtx6000b-small", "name": "a1", "ttl": "1h", "max_hourly_price": 5})
     err = payload(result)["error"]
     assert result["isError"] and err["code"] == "API_KEY_BUDGET_EXCEEDED" and err["exit_code"] == 6 and "do not retry" in err["message"]
+
+
+def test_up_standard_passes_ssh_key_ids(server, api) -> None:
+    api.on("POST", "/api/volt/pods", handler=lambda r: httpx.Response(201, json={"success": True, "pod": {"id": "pod-9", "hourly_price": 0.59}}))
+    result = call(server, "up", {"tier": STANDARD_TIER, "name": "s1", "ttl": "1h", "max_hourly_price": 1,
+                                 "ssh_key_ids": ["key_7"], "wait": False})
+    assert not result.get("isError")
+    assert api.json_of("POST", "/api/volt/pods")["ssh_key_id"] == "key_7"
+    result = call(server, "up", {"tier": STANDARD_TIER, "name": "s2", "ttl": "1h", "max_hourly_price": 1,
+                                 "ssh_key_ids": ["key_7", "key_8"], "wait": False})
+    assert result["isError"] and payload(result)["error"]["exit_code"] == 2
+    assert len(api.sent("POST", "/api/volt/pods")) == 1
+
+
+def test_up_standard_several_ssh_keys_says_pass_ssh_key_ids(server, api) -> None:
+    api.on("POST", "/api/volt/pods", status=400, body=SEVERAL_KEYS)
+    result = call(server, "up", {"tier": STANDARD_TIER, "name": "s1", "ttl": "1h", "max_hourly_price": 1, "wait": False})
+    err = payload(result)["error"]
+    assert result["isError"] and err["code"] == "SSH_KEY_ID_REQUIRED" and err["exit_code"] == 2
+    assert "several SSH keys" in err["message"] and "ssh_key_ids" in err["message"] and "--ssh-key-id" not in err["message"]
 
 
 def test_rm_needs_confirm_true(server, api) -> None:

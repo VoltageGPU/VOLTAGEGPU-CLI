@@ -142,6 +142,46 @@ def test_up_standard_sandbox_baremetal_bodies(api, capsys) -> None:
                                                     "hardstop_hours": 3, "ssh_key_ids": ["key_1"]}
 
 
+STANDARD_TIER = "a292aae7-2767-44b0-803b-12cc3ab47012"
+# The answer of POST /api/volt/pods (standard) when the account has several SSH keys and none was named.
+SEVERAL_KEYS = {"success": False, "status_code": 400,
+                "error": "ssh_key_id is required when your account has more than one SSH key. List your keys with GET /api/volt/ssh-keys."}
+
+
+def test_up_standard_passes_the_ssh_key_id(api, capsys) -> None:
+    api.on("POST", "/api/volt/pods", handler=lambda r: httpx.Response(201, json={"success": True, "pod": {"id": "pod-9", "hourly_price": 0.59}}))
+    code, _, _ = run(capsys, "up", STANDARD_TIER, "--name", "s1", "--ttl", "1h", "-y", "--no-wait", "--json", "--ssh-key-id", "key_7")
+    assert code == 0
+    assert api.json_of("POST", "/api/volt/pods") == {"provider": "standard", "name": "s1", "machine_id": STANDARD_TIER,
+                                                    "auto_terminate_hours": 1, "ssh_key_id": "key_7"}
+    assert api.sent("GET", "/api/volt/ssh-keys") == []  # an own key cannot read them: never asked
+
+
+def test_up_standard_takes_a_single_ssh_key_id(api, capsys) -> None:
+    code, _, err = run(capsys, "up", STANDARD_TIER, "--name", "s1", "--ttl", "1h", "-y", "--ssh-key-id", "key_7", "--ssh-key-id", "key_8")
+    assert code == 2 and "one SSH key" in err
+    assert api.sent("POST", "/api/volt/pods") == []
+
+
+def test_up_standard_several_ssh_keys_says_pass_ssh_key_id(api, capsys) -> None:
+    api.on("POST", "/api/volt/pods", status=400, body=SEVERAL_KEYS)
+    code, out, err = run(capsys, "up", STANDARD_TIER, "--name", "s1", "--ttl", "1h", "-y", "--no-wait", "--json")
+    assert code == 2
+    error = json.loads(out)["error"]
+    assert error["code"] == "SSH_KEY_ID_REQUIRED" and error["exit_code"] == 2 and error["http_status"] == 400
+    assert "several SSH keys" in error["message"] and "--ssh-key-id" in error["message"]
+    assert "voltagegpu ssh-keys list" in error["message"] and "Nothing was charged" in error["message"]
+    code, _, err = run(capsys, "up", STANDARD_TIER, "--name", "s1", "--ttl", "1h", "-y", "--no-wait")
+    assert code == 2 and "--ssh-key-id" in err
+
+
+def test_up_standard_other_400_is_left_as_is(api, capsys) -> None:
+    api.on("POST", "/api/volt/pods", status=400,
+           body={"success": False, "error": "ssh_key_id is not a valid key id. List your keys with GET /api/volt/ssh-keys."})
+    code, out, _ = run(capsys, "up", STANDARD_TIER, "--name", "s1", "--ttl", "1h", "-y", "--no-wait", "--json", "--ssh-key-id", "bad key")
+    assert code == 2 and json.loads(out)["error"]["code"] == "HTTP_400"
+
+
 def test_up_requires_ttl_and_yes_when_not_interactive(api, capsys) -> None:
     code, _, err = run(capsys, "up", "rtx6000b-small", "--name", "x")
     assert code == 2 and "--ttl" in err

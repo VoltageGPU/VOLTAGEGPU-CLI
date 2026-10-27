@@ -85,6 +85,18 @@ def api_fail(exc: ApiError) -> Fail:
     return Fail(exit_code, message, code, {"http_status": status, **extra})
 
 
+def ssh_key_needed(exc: ApiError, kind: str, given: bool, how: str) -> Optional[Fail]:
+    """The 400 of a standard GPU when the account has several SSH keys and none was named.
+
+    ``how`` names the way to give one (``--ssh-key-id`` for the CLI, ``ssh_key_ids`` for MCP).
+    The API answers it before any charge; its text is the only marker (no code in the body).
+    """
+    if kind != "standard" or given or exc.status_code != 400 or "more than one ssh key" not in exc.message.lower():
+        return None
+    return Fail(2, f"This account has several SSH keys: pass {how} with one key id (the account owner lists them with "
+                   "`voltagegpu ssh-keys list`). Nothing was charged.", "SSH_KEY_ID_REQUIRED", {"http_status": 400})
+
+
 def _emit(as_json: bool, data: Any, human: str) -> None:
     click.echo(json.dumps(data, indent=2, default=str) if as_json else human)
 
@@ -185,7 +197,9 @@ def _wait_ready_client(client: Any, pod_id: str, timeout: int) -> Optional[Insta
 @click.option("-y", "--yes", is_flag=True, help="Do not ask for confirmation (required when not in a terminal).")
 @click.option("--wait/--no-wait", default=True, help="Wait until SSH answers (default).")
 @click.option("--timeout", default=900, show_default=True, help="Seconds to wait for SSH.")
-@click.option("--ssh-key-id", "ssh_key_ids", multiple=True, help="SSH key id to bind (dedicated machines, sandboxes); repeatable.")
+@click.option("--ssh-key-id", "ssh_key_ids", multiple=True,
+              help="SSH key id to bind: one for a standard GPU (needed when the account has several keys); "
+                   "repeatable for dedicated machines and sandboxes.")
 @click.option("--show-secret", is_flag=True, help="Print the sudo password of a Confidential VM (shown once, never stored).")
 @click.option("--json", "as_json", is_flag=True)
 @click.pass_context
@@ -215,6 +229,9 @@ def up_cmd(ctx: click.Context, tier: str, name: str, ttl: str, kind: Optional[st
         if exc.status_code == 0:
             raise Fail(1, "The deploy request got no answer: a machine may have started and been charged. Run `vgpu ps` "
                           "before trying again; vgpu never retries a deploy by itself.", "NO_ANSWER") from None
+        needed = ssh_key_needed(exc, offer.kind, bool(ssh_key_ids), "--ssh-key-id")
+        if needed:
+            raise needed from None
         raise
     secret = result.pop("_sudo_password", None)
     names.put(name, {"id": result["id"], "kind": result["kind"], "tier": tier, "created_at": datetime.now(timezone.utc).isoformat()})

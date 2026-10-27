@@ -148,6 +148,8 @@ The first connection to a machine records its host key in
 Names given at `up` are kept in `~/.volt/vgpu-names.json`; ids work too.
 
 Confidential VMs and CPU tiers bind the SSH keys already on the account.
+A standard GPU binds one key: the account's only key, or `--ssh-key-id ID`
+when the account has several (`voltagegpu ssh-keys list` shows the ids).
 Dedicated machines and sandboxes take key ids: by default every key of the
 account, but a key limited to its own machines cannot read them, so pass
 `--ssh-key-id ID` (repeatable). For such a key `whoami` and `voltagegpu
