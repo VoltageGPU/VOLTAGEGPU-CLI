@@ -21,7 +21,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import click
 
@@ -68,7 +68,7 @@ class Fail(Exception):
         self.extra = dict(extra or {})
 
 
-def _api_fail(exc: ApiError) -> Fail:
+def api_fail(exc: ApiError) -> Fail:
     payload = exc.payload or {}
     raw_code = payload.get("error") if isinstance(payload.get("error"), str) else None
     code = raw_code if raw_code and raw_code.isupper() and " " not in raw_code else str(payload.get("code") or f"HTTP_{exc.status_code or 0}")
@@ -103,10 +103,7 @@ def _confirm(yes: bool, question: str) -> None:
 
 
 def _find(ctx: click.Context, ref: str) -> Instance:
-    inst = resolve(list_instances(_state(ctx).client()), ref)
-    if inst is None:
-        raise Fail(5, f"No machine named or with id {ref!r} for this key. Run `vgpu ps`.")
-    return inst
+    return find_instance(_state(ctx).client(), ref)
 
 
 def _reachable(inst: Instance):
@@ -169,9 +166,9 @@ def ls_cmd(ctx: click.Context, kind: Optional[str], gpu: Optional[str], max_pric
     _emit(as_json, [o.to_dict() for o in offers], "\n".join(lines) if offers else "No offer matches.")
 
 
-def _wait_ready(ctx: click.Context, pod_id: str, timeout: int) -> Optional[Instance]:
+def _wait_ready_client(client: Any, pod_id: str, timeout: int) -> Optional[Instance]:
     for _ in range(max(1, timeout // 10)):
-        inst = resolve(list_instances(_state(ctx).client()), pod_id)
+        inst = resolve(list_instances(client), pod_id)
         if inst is not None and inst.target is not None:
             return inst
         _sleep(10)
@@ -221,7 +218,7 @@ def up_cmd(ctx: click.Context, tier: str, name: str, ttl: str, kind: Optional[st
         raise
     secret = result.pop("_sudo_password", None)
     names.put(name, {"id": result["id"], "kind": result["kind"], "tier": tier, "created_at": datetime.now(timezone.utc).isoformat()})
-    ready = _wait_ready(ctx, result["id"], timeout) if wait else None
+    ready = _wait_ready_client(client, result["id"], timeout) if wait else None
     result.update({"ssh": ready.ssh if ready else None, "ssh_ready": bool(ready), "status": ready.status if ready else "STARTING"})
     if show_secret and secret:
         result["sudo_password"] = secret
@@ -299,22 +296,20 @@ def rm_cmd(ctx: click.Context, ref: str, yes: bool, as_json: bool) -> None:
     _emit(as_json, data, f"Released {inst.name or inst.id}.")
 
 
-def _attest_fail(as_json: bool, kind: str, challenge: str, check: str, detail: str) -> None:
-    data = {"verified": False, "status": "NOT_VERIFIED", "tee": attest.TEE[kind], "challenge": challenge, "failed": [check], "detail": detail}
-    _emit(as_json, data, f"NOT VERIFIED: {detail}")
-    raise click.exceptions.Exit(8)
+def _attest_failure(kind: str, challenge: str, check: str, detail: str) -> Tuple[Dict[str, Any], int]:
+    return {"verified": False, "status": "NOT_VERIFIED", "tee": attest.TEE[kind], "challenge": challenge, "failed": [check], "detail": detail}, 8
 
 
-@vgpu.command("attest")
-@click.argument("ref")
-@click.option("--offline", is_flag=True, help="GPU: use the collateral inside the bundle, no network call.")
-@click.option("--out", type=click.Path(file_okay=False), help="Folder for the archive and the report.")
-@click.option("-i", "--identity", help="Private key file (default: VGPU_SSH_KEY).")
-@click.option("--json", "as_json", is_flag=True)
-@click.pass_context
-def attest_cmd(ctx: click.Context, ref: str, offline: bool, out: Optional[str], identity: Optional[str], as_json: bool) -> None:
-    """Prove the machine is a genuine TEE: challenge drawn here, proofs made in the VM, checked here."""
-    inst = _find(ctx, ref)
+def find_instance(client: Any, ref: str) -> Instance:
+    inst = resolve(list_instances(client), ref)
+    if inst is None:
+        raise Fail(5, f"No machine named or with id {ref!r} for this key. Run `vgpu ps`.")
+    return inst
+
+
+def attest_machine(client: Any, ref: str, *, out: Optional[str], offline: bool, identity: Optional[str]) -> Tuple[Dict[str, Any], int]:
+    """The whole `vgpu attest` (CLI and local MCP server): result and exit code (0, 8 or 9)."""
+    inst = find_instance(client, ref)
     try:
         script = attest.load_script(inst.kind)
     except attest.AttestError as exc:
@@ -327,18 +322,17 @@ def attest_cmd(ctx: click.Context, ref: str, offline: bool, out: Optional[str], 
     key = _identity(identity)
     proc = _run(exec_argv(target, inst.id, attest.remote_command(challenge), identity=key, ssh_bin=ssh),
                 input=script, capture_output=True, timeout=1800)
-    (folder / "in-the-vm.log").write_bytes((proc.stdout or b"") + (proc.stderr or b""))
+    log = folder / "in-the-vm.log"
+    log.write_bytes((proc.stdout or b"") + (proc.stderr or b""))
     if proc.returncode != 0 and inst.kind == "cpu" and proc.returncode in attest.SNP_SCRIPT_EXIT:
         name = attest.SNP_SCRIPT_EXIT[proc.returncode]
-        _attest_fail(as_json, inst.kind, challenge, name, f"the proof script refused the report ({name}, exit {proc.returncode}); "
-                                                         f"see {folder / 'in-the-vm.log'}")
+        return _attest_failure(inst.kind, challenge, name, f"the proof script refused the report ({name}, exit {proc.returncode}); see {log}")
     if proc.returncode != 0:
-        _attest_fail(as_json, inst.kind, challenge, "in_vm_script",
-                     f"the proof script exited with {proc.returncode}; see {folder / 'in-the-vm.log'}")
+        return _attest_failure(inst.kind, challenge, "in_vm_script", f"the proof script exited with {proc.returncode}; see {log}")
     archive = folder / Path(attest.ARCHIVES[inst.kind]).name
     copy = _run(scp_argv(target, inst.id, attest.ARCHIVES[inst.kind], str(archive), identity=key, scp_bin=scp))
     if copy.returncode != 0 or not archive.is_file():
-        _attest_fail(as_json, inst.kind, challenge, "archive_copy", f"could not copy {attest.ARCHIVES[inst.kind]} (scp exit {copy.returncode})")
+        return _attest_failure(inst.kind, challenge, "archive_copy", f"could not copy {attest.ARCHIVES[inst.kind]} (scp exit {copy.returncode})")
     try:
         extracted = attest.extract_archive(archive, folder / "proof")
         if inst.kind == "vm":
@@ -348,11 +342,27 @@ def attest_cmd(ctx: click.Context, ref: str, offline: bool, out: Optional[str], 
     except attest.ToolMissing as exc:
         raise Fail(9, str(exc)) from None
     except attest.AttestError as exc:
-        _attest_fail(as_json, inst.kind, challenge, "archive", str(exc))
+        return _attest_failure(inst.kind, challenge, "archive", str(exc))
     data = {"name": inst.name, "id": inst.id, **result.to_dict(), "folder": str(folder)}
-    human = f"{result.status}: {result.tee}, challenge {challenge[:16]}..." + (f" failed: {', '.join(result.failed)}" if result.failed else "")
+    return data, 0 if result.verified else 9 if result.status == "INCOMPLETE" else 8
+
+
+@vgpu.command("attest")
+@click.argument("ref")
+@click.option("--offline", is_flag=True, help="GPU: use the collateral inside the bundle, no network call.")
+@click.option("--out", type=click.Path(file_okay=False), help="Folder for the archive and the report.")
+@click.option("-i", "--identity", help="Private key file (default: VGPU_SSH_KEY).")
+@click.option("--json", "as_json", is_flag=True)
+@click.pass_context
+def attest_cmd(ctx: click.Context, ref: str, offline: bool, out: Optional[str], identity: Optional[str], as_json: bool) -> None:
+    """Prove the machine is a genuine TEE: challenge drawn here, proofs made in the VM, checked here."""
+    data, code = attest_machine(_state(ctx).client(), ref, out=out, offline=offline, identity=identity)
+    failed = data.get("failed") or []
+    human = f"{data['status']}: {data['tee']}, challenge {data['challenge'][:16]}..." + (f" failed: {', '.join(failed)}" if failed else "")
+    if data.get("detail"):
+        human += f" ({data['detail']})"
     _emit(as_json, data, human)
-    raise click.exceptions.Exit(0 if result.verified else 9 if result.status == "INCOMPLETE" else 8)
+    raise click.exceptions.Exit(code)
 
 
 @vgpu.command("whoami")
@@ -381,6 +391,14 @@ def whoami_cmd(ctx: click.Context, as_json: bool) -> None:
                         f"balance   {data['balance']} {data['currency']}" if data["balance"] is not None
                         else f"balance   hidden ({data['balance_hidden']})"]
     _emit(as_json, data, "\n".join(lines))
+
+
+@vgpu.command("mcp")
+def mcp_cmd() -> None:
+    """Local MCP server over stdio (ls, up, ps, exec, scp, rm, attest, inference, whoami) for AI agents."""
+    from ..mcp.server import run_stdio
+
+    run_stdio()
 
 
 def _report(fail: Fail, as_json: bool) -> int:
@@ -413,7 +431,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     except ApiError as exc:
         if debug:
             raise
-        sys.exit(_report(_api_fail(exc), as_json))
+        sys.exit(_report(api_fail(exc), as_json))
     except ConfigError as exc:
         sys.exit(_report(Fail(3, str(exc), "API_KEY_MISSING"), as_json))
     except (TtlError, RemotePathError, ValueError) as exc:

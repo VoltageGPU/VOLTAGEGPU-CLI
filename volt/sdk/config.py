@@ -165,7 +165,8 @@ class Config:
         key, source = (api_key, "argument") if api_key else (None, "")
         if not key:
             for name in API_KEY_ENV_VARS:
-                if environ.get(name):
+                # A vgpu_ value is an inference key (public docs): never sent to the pod API.
+                if environ.get(name) and not environ[name].strip().startswith("vgpu_"):
                     key, source = environ[name].strip(), f"environment ({name})"
                     break
         if not key:

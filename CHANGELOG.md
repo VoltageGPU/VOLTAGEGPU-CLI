@@ -15,12 +15,17 @@ All notable changes to `voltagegpu-cli` are documented here. The format follows
   checked against its bounds before anything is sent.
 - `vgpu attest`: challenge drawn locally, embedded proof scripts pinned by
   SHA-256, archive extracted safely and verified locally.
+- `vgpu mcp`, a local MCP server over stdio with the same tools and guards
+  (`up` needs `ttl` and `max_hourly_price`, `rm` needs `confirm`), plus
+  `inference` on the OpenAI-compatible API with a `vgpu_` key.
 - Documented exit codes, including 6 for HTTP 402 (`API_KEY_BUDGET_EXCEEDED`)
   and 4 for `API_KEY_SCOPE_MISSING`.
 
 ### Changed
 - `voltagegpu balance` no longer shows `$0.00` when the key cannot read the
   balance (agent key without the billing scope): it says the balance is hidden.
+- A `vgpu_` inference key in `VOLTAGEGPU_API_KEY` is no longer taken for the
+  pod API key; the next source (config file) is used.
 - `voltagegpu` and `volt` are otherwise unchanged. The major version marks the new
   command and its exit-code contract.
 

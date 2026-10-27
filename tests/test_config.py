@@ -88,3 +88,14 @@ def test_remove_key(tmp_path):
     assert remove_api_key(path) is False
     with pytest.raises(ConfigError):
         Config.load(env={}, config_path=path)
+
+
+def test_inference_key_in_voltagegpu_api_key_is_not_taken_for_the_pod_api(tmp_path):
+    """VOLTAGEGPU_API_KEY holds the vgpu_ inference key in the public docs: skip it, use the next source."""
+    from volt.sdk.config import Config
+
+    pod_key = "volt_" + "d" * 32
+    path = tmp_path / "config.ini"
+    path.write_text(f"[api]\napi_key = {pod_key}\n", encoding="utf-8")
+    cfg = Config.load(env={"VOLTAGEGPU_API_KEY": "vgpu_" + "e" * 40}, config_path=path)
+    assert cfg.api_key == pod_key and cfg.source.startswith("file")

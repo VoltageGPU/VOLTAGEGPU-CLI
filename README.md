@@ -184,6 +184,31 @@ attestation and are refused.
 With `--json`, an error is also printed on stdout as
 `{"error": {"code", "message", "exit_code", ...}}`.
 
+### Local MCP server
+
+`vgpu mcp` serves the tools `ls`, `up`, `ps`, `exec`, `scp`, `rm`, `attest`,
+`inference` and `whoami` over stdio. It runs on your machine because `exec`,
+`scp` and `attest` use your SSH private key, which never leaves it. Same
+guards as the command line: `up` requires `ttl` and `max_hourly_price`, `rm`
+requires `confirm: true`, a 402 comes back as `API_KEY_BUDGET_EXCEEDED` with
+"do not retry", the key is never part of an answer, and the sudo password of
+a Confidential VM is never handed to the agent. `inference` calls the
+OpenAI-compatible API with an inference key (`vgpu_...`) in
+`VOLTAGEGPU_API_KEY`; a `vgpu_` value there is never sent to the pod API,
+which takes the `volt_` key from `VOLT_API_KEY`.
+
+```bash
+claude mcp add voltagegpu -e VOLT_API_KEY=volt_... -- vgpu mcp    # Claude Code
+```
+
+```toml
+# Codex: ~/.codex/config.toml
+[mcp_servers.voltagegpu]
+command = "vgpu"
+args = ["mcp"]
+env = { VOLT_API_KEY = "volt_..." }
+```
+
 ## Python SDK
 
 ```python
