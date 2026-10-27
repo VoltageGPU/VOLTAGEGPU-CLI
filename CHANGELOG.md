@@ -4,6 +4,19 @@ All notable changes to `voltagegpu-cli` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] - 2026-10-27
+
+Found by an end-to-end test of the agent offer in production.
+
+### Fixed
+- `vgpu attest` names the NVIDIA GPU in its verdict when the GPU checks passed:
+  `VERIFIED: Intel TDX + NVIDIA GPU, challenge ...` (the JSON `tee` field is unchanged).
+- `vgpu whoami` shows budgets and spend to the cent (it printed `0.18999999999999995`); `--json`
+  keeps the exact values.
+- `vgpu scp` explains a Windows remote path: Git Bash rewrites an absolute remote path such as
+  `/tmp/out.tgz` into `C:/.../Temp/out.tgz`. Use a path relative to the remote home, or
+  `MSYS_NO_PATHCONV=1`.
+
 ## [2.0.0] - 2026-10-27
 
 ### Added

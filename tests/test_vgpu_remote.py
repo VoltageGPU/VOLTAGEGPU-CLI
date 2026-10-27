@@ -63,3 +63,15 @@ def test_remote_path_refused(path: str) -> None:
 def test_local_path_starting_with_dash_refused(tmp_path: Path) -> None:
     with pytest.raises(RemotePathError):
         scp_argv(TARGET, "p", "/tmp/a", "-oProxyCommand=x", home=tmp_path, scp_bin="scp")
+
+
+def test_windows_path_rewritten_by_git_bash_gets_a_clear_hint(monkeypatch) -> None:
+    # 27/10/2026: Git Bash turned "/tmp/aller.txt" into "C:/Users/.../Temp/aller.txt" before vgpu saw it.
+    monkeypatch.setenv("MSYSTEM", "MINGW64")
+    with pytest.raises(RemotePathError) as exc:
+        validate_remote_path("C:/Users/User/AppData/Local/Temp/aller.txt")
+    assert "Git Bash" in str(exc.value) and "MSYS_NO_PATHCONV=1" in str(exc.value) and "relative" in str(exc.value)
+
+
+def test_relative_remote_path_is_accepted() -> None:
+    assert validate_remote_path("out.tgz") == "out.tgz"

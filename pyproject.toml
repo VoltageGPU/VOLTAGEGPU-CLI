@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "voltagegpu-cli"
-version = "2.0.0"
+version = "2.0.1"
 description = "VoltageGPU CLI and Python SDK: Confidential VMs (Intel TDX), Confidential CPU (AMD SEV-SNP), standard GPU pods, dedicated machines and sandboxes, with the vgpu command for scripts and AI agents."
 readme = "README.md"
 requires-python = ">=3.10"

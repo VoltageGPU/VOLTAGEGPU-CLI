@@ -13,6 +13,7 @@ are reused by other machines after a release.
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from pathlib import Path
@@ -48,7 +49,17 @@ def ssh_options(pod_id: str, home: Optional[Path] = None) -> List[str]:
     ]
 
 
+_WINDOWS_PATH_RE = re.compile(r"^[A-Za-z]:[\/]")
+
+
 def validate_remote_path(path: str) -> str:
+    if path and _WINDOWS_PATH_RE.match(path):
+        # Git Bash (MSYS) rewrites an absolute remote path such as /tmp/out.tgz into C:/.../Temp/out.tgz.
+        hint = "Git Bash rewrote an absolute remote path into a Windows one; " if os.environ.get("MSYSTEM") else ""
+        raise RemotePathError(
+            f"Refusing remote path {path!r}: it is a Windows path. {hint}"
+            "Use a path relative to the remote home (out.tgz), or run with MSYS_NO_PATHCONV=1."
+        )
     if not path or path.startswith("-") or not _REMOTE_PATH_RE.fullmatch(path):
         raise RemotePathError(
             f"Refusing remote path {path!r}: use letters, digits and ./_~-+@=,% only (no spaces or shell characters)."

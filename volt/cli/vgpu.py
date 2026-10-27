@@ -97,6 +97,13 @@ def ssh_key_needed(exc: ApiError, kind: str, given: bool, how: str) -> Optional[
                    "`voltagegpu ssh-keys list`). Nothing was charged.", "SSH_KEY_ID_REQUIRED", {"http_status": 400})
 
 
+def _cents(values: Any) -> Any:
+    """Budgets and spend shown to a human, to the cent (a float sum prints 0.18999999999999995)."""
+    if not isinstance(values, Mapping):
+        return values
+    return {k: round(v, 2) if isinstance(v, (int, float)) and not isinstance(v, bool) else v for k, v in values.items()}
+
+
 def _emit(as_json: bool, data: Any, human: str) -> None:
     click.echo(json.dumps(data, indent=2, default=str) if as_json else human)
 
@@ -384,7 +391,10 @@ def attest_cmd(ctx: click.Context, ref: str, offline: bool, out: Optional[str], 
     """Prove the machine is a genuine TEE: challenge drawn here, proofs made in the VM, checked here."""
     data, code = attest_machine(_state(ctx).client(), ref, out=out, offline=offline, identity=identity, vmpl=vmpl)
     failed = data.get("failed") or []
-    human = f"{data['status']}: {data['tee']}, challenge {data['challenge'][:16]}..." + (f" failed: {', '.join(failed)}" if failed else "")
+    # 2.0.1: a VM verdict covers the NVIDIA GPU too; say so when its checks passed.
+    gpu_checked = any(str(c.get("name", "")).startswith("nvidia.") and c.get("ok") for c in data.get("checks") or [])
+    tee = f"{data['tee']} + NVIDIA GPU" if data.get("verified") and gpu_checked else data["tee"]
+    human = f"{data['status']}: {tee}, challenge {data['challenge'][:16]}..." + (f" failed: {', '.join(failed)}" if failed else "")
     if data.get("detail"):
         human += f" ({data['detail']})"
     if (data.get("facts") or {}).get("vmpl_fallback"):
@@ -415,7 +425,7 @@ def whoami_cmd(ctx: click.Context, as_json: bool) -> None:
     lines: List[str] = [f"key       {data['key']['masked']} {key.get('name') or ''}".rstrip(),
                         f"scopes    {', '.join(key.get('scopes') or []) or 'full access'}",
                         f"machines  {key.get('pod_visibility') or 'account'}",
-                        f"budgets   {json.dumps(key.get('budgets_usd') or {})}  spent {json.dumps(key.get('spent_usd') or {})}",
+                        f"budgets   {json.dumps(_cents(key.get('budgets_usd') or {}))}  spent {json.dumps(_cents(key.get('spent_usd') or {}))}",
                         f"balance   {data['balance']} {data['currency']}" if data["balance"] is not None
                         else f"balance   hidden ({data['balance_hidden']})"]
     _emit(as_json, data, "\n".join(lines))

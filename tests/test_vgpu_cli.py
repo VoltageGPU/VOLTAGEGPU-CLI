@@ -463,3 +463,32 @@ def test_whoami_with_hidden_balance(api, capsys) -> None:
     assert code == 0 and data["balance"] is None and data["balance_hidden"].startswith("This agent key")
     code, out, _ = run(capsys, "whoami")
     assert code == 0 and "hidden" in out
+
+
+# ------------------------------------------------------------------ 2.0.1 (end-to-end agent test of 27/10/2026)
+
+
+def test_whoami_rounds_spend_to_cents_for_humans(api, capsys) -> None:
+    api.on("GET", "/api/volt/whoami", body={"success": True, "key": {"name": "agent", "scopes": ["read"], "budgets_usd": {"daily": 20},
+                                                                    "spent_usd": {"daily": 0.18999999999999995, "monthly": None}},
+                                           "balance": None, "balance_hidden": "hidden"})
+    code, out, _ = run(capsys, "whoami")
+    assert code == 0 and '"daily": 0.19' in out and "0.18999" not in out
+    code, out, _ = run(capsys, "whoami", "--json")
+    assert json.loads(out)["key"]["spent_usd"]["daily"] == 0.18999999999999995
+
+
+def test_attest_human_output_names_the_gpu_when_its_checks_passed(api, capsys, monkeypatch) -> None:
+    data = {"name": "job1", "id": "wrk-1", "verified": True, "status": "VERIFIED", "tee": "Intel TDX", "challenge": "ab" * 32,
+            "failed": [], "checks": [{"name": "tdx.signature", "ok": True}, {"name": "nvidia.policy", "ok": True}]}
+    monkeypatch.setattr(vgpu_mod, "attest_machine", lambda client, ref, **kwargs: (data, 0))
+    code, out, _ = run(capsys, "attest", "job1")
+    assert code == 0 and out.startswith("VERIFIED: Intel TDX + NVIDIA GPU, challenge")
+
+
+def test_attest_human_output_keeps_the_tee_alone_without_gpu_checks(api, capsys, monkeypatch) -> None:
+    data = {"name": "c1", "id": "wrk-2", "verified": True, "status": "VERIFIED", "tee": "AMD SEV-SNP", "challenge": "ab" * 64,
+            "failed": [], "checks": [{"name": "snp.report", "ok": True}]}
+    monkeypatch.setattr(vgpu_mod, "attest_machine", lambda client, ref, **kwargs: (data, 0))
+    code, out, _ = run(capsys, "attest", "c1")
+    assert code == 0 and out.startswith("VERIFIED: AMD SEV-SNP, challenge") and "NVIDIA" not in out
